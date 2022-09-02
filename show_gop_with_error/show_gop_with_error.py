@@ -98,7 +98,7 @@ def plot(df_labels, phoneme='all'):
     #plt.rcParams["figure.autolayout"] = True
     allLabels = [ df_labels.loc[df_labels["phonemes"] == i,["scores","labels"]].to_numpy() for i in allowed_phonemes]
     dAndS = [ df_labels.loc[(df_labels["phonemes"] == i) & (df_labels['labels'].isin(["S", "D"])), "scores"].to_numpy() for i in allowed_phonemes]
-    assert(len(allLabels) == len(dAndS))
+    assert(len(allLabels) == len(dAndS) and len(allLabels) != 0)
     #plt.legend(loc='upper right')
     if len(allLabels) == 1:
         fig, ax = plt.subplots(1, 1)
@@ -109,9 +109,15 @@ def plot(df_labels, phoneme='all'):
         if len(dAndS[0]) != 0:
             ax.axvline(dAndS[0].mean(), color='k', linestyle='dashed', linewidth=1, label='error-mean')
         ax.legend(loc ="upper left")
-        ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[0], auc_cal(allLabels[0])))
+        auc_value = auc_cal(allLabels[0])
+        ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[0], auc_value))
+        if auc_value != 'NoDef':  ##exclude the phonemes that have only one lable
+            print("average auc = {0}".format(auc_value))
+        else:
+            print("auc not available for currrent phoneme")
 
     else:
+        auc_vector = []
         fig, axs = plt.subplots(len(allLabels), figsize=(10,3*len(allLabels)))
         plt.rcParams["figure.autolayout"] = True
         for idx,ax in enumerate(axs):
@@ -122,19 +128,26 @@ def plot(df_labels, phoneme='all'):
             if len(dAndS[idx]) != 0:
                 ax.axvline(dAndS[idx].mean(), color='k', linestyle='dashed', linewidth=1, label='error-mean')
             ax.legend(loc ="upper left")
-            ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[idx], auc_cal(allLabels[idx])))
+            auc_value = auc_cal(allLabels[idx])
+            ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[idx], auc_value))
+            if auc_value != 'NoDef':  ##exclude the phonemes that have only one lable
+                auc_vector.append(auc_value)
+        if len(auc_vector) != 0:
+            print("average auc = {0}".format(sum(auc_vector)/len(auc_vector)))
+        else:
+            print("auc not available for current phonemes")
 
     html_str = mpld3.fig_to_html(fig)
     Html_file= open("{0}.html".format(phoneme),"w")
     Html_file.write(html_str)
     Html_file.close()
             
-def auc_cal(array): #input is a nX2 array, the with the columns "score", "label"
+def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
     labels = [ 0 if i == "C" else 1  for i in array[:, 1]]
     if len(set(labels)) <= 1:
-        return "NoDefine"
+        return "NoDef"
     else:
-        return metrics.roc_auc_score(labels, -array[:, 0]) #negative because GOP is negative correlateing to the probablity of making an error
+        return metrics.roc_auc_score(labels, -array[:, 0]) #negative because GOP is negatively correlated to the probablity of making an error
 
 
 if __name__ == "__main__":

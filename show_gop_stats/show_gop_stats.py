@@ -17,16 +17,18 @@ def get_stat(in_file_path, in_phoneme=''):
     df = pd.DataFrame(columns=('phonemes','scores','uttid'))
     isNewUtt = True
     for line in in_file:
+        line = line.strip()
         fields = line.split(' ')
         if isNewUtt:
-            if len(fields) != 2:
+            if len(fields) != 1:
                 sys.exit("uttid must be the first line of each utterance")
             uttid=fields[0]
             isNewUtt = False
+            continue
         if line == '':
             isNewUtt = True
             continue
-        if len(fields) != 4:
+        if len(fields) != 3:
             continue
         cur_match = re_phone.match(fields[1])
         if (cur_match):

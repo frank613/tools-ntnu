@@ -36,7 +36,6 @@ if __name__ == "__main__":
         sys.exit("this script takes  arguments for <input-file> <map-file> which maps phonemes in col1 to col2")
 
     main(sys.argv[1], sys.argv[2])
-    print('done')
 
 
     

@@ -41,13 +41,14 @@ def get_dist(ref_sent, input_sent, ref_idx, input_idx, dp_matrix):
         
 
 def edit_dist(ref_sent, input_sent):
-    print("comparing {0} to {1}".format(input_sent, ref_sent))
+    #print("comparing {0} to {1}".format(input_sent, ref_sent))
     dp_matrix = [[None] * (len(input_sent) + 1) for i in range(len(ref_sent)+1)]  #+1 for saving the boundary case when ref/input words used up
     #print(dp_matrix)
     dist, sequence = get_dist(ref_sent, input_sent, 0, 0, dp_matrix)
     if dist > max(len(input_sent), len(ref_sent)) or dist < abs(len(input_sent) - len(ref_sent)):
         print("upper or lower bound of the lev dist is not attained")
-    print(dist, sequence)
+    #print(dist, sequence)
+    return (dist, sequence)
     
 
 
