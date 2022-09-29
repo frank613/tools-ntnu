@@ -14,18 +14,26 @@ def labelError(GOP_file, cano_GOP, from_phone):
     cano_df = readGOPToDF(cano_GOP)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
     if len(gop_df.index) != len(cano_df.index):
-        sys.exit("number of the uttids of the two GOPs is not matching")
+        print("number of the uttids of the two GOPs is not matching")
     
     for index, row in cano_df.iterrows():
-        if row['uttid'] != gop_df.loc[index, "uttid"]:
-            sys.exit("uttid not matching, ignored the utterance")
-        if len(row["seq-score"]) != len(gop_df.loc[index, "seq-score"]):
+        if not any(gop_df["uttid"] == row["uttid"]):
+            continue
+        newSeq = gop_df.loc[gop_df["uttid"] == row["uttid"], "seq-score"]
+        if len(newSeq) != 1:
+            print("same uttid found in the same file , ignored the utterance")
+            continue
+        newSeq = newSeq.tolist()[0]
+        #if row['uttid'] != gop_df.loc[index, "uttid"]:
+        #    sys.exit("uttid not matching, ignored the utterance")
+        if len(row["seq-score"]) != len(newSeq):
             print("length of phonemes not matching for uttid: {}, ignored the utterence".format(row['uttid']))
             continue
         labels = [1 if pair[0] == from_phone else 0 for pair in row["seq-score"]]
-        extended = [ pair + (labels[idx], row['uttid']) for idx, pair in enumerate(gop_df.loc[index, 'seq-score'])]
+        extended = [ pair + (labels[idx], row['uttid']) for idx, pair in enumerate(newSeq)]
         df = df.append(pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid']))
     return df
+
 
 def readGOPToDF(ark_file):
     in_file = open(ark_file, 'r')
@@ -64,12 +72,12 @@ def plot(df_labels, from_phoneme, phoneme):
     fig, ax = plt.subplots(1, 1)
     if len(real) != 0:
         ax.hist(real, density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='real')
-        ax.hist(real.mean(), density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='original-mean')
-        #ax.axvline(real.mean(), 0, 1, color='k', linestyle='dashed', linewidth=2, label='original-mean')
+        #ax.hist(real.mean(), range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, color="k", label='original-mean')
+        ax.axvline(real.mean(), color='k', linestyle='dashed', linewidth=1, label='original-mean')
     if len(substituted) != 0:
         ax.hist(substituted, density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.8, label='substituted from {0}'.format(from_phoneme))
-        ax.hist(substituted.mean(), density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.8, label='wrong-mean')
-        #ax.axvline(substituted.mean(), 0, 1, color='k', linestyle='dashed', linewidth=1, label='error-mean')  
+        #ax.hist(substituted.mean(),  range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, color='k', label='wrong-mean')
+        ax.axvline(substituted.mean(), color='k', linestyle='dashed', linewidth=1, label='error-mean')  
     ax.legend(loc ="upper left")
     ax.set_title('phoneme {0}, substitue from {1}'.format(phoneme, from_phoneme))
 
@@ -77,6 +85,8 @@ def plot(df_labels, from_phoneme, phoneme):
     Html_file= open("./output/{0}/{1}.html".format(phoneme, from_phoneme),"w")
     Html_file.write(html_str)
     Html_file.close()     
+
+    plt.savefig("./output/{0}/{1}.png".format(phoneme, from_phoneme))
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:

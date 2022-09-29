@@ -1,0 +1,122 @@
+# Created 27 March 2015 E. Chodroff 
+
+form command line calls
+	folder Ctm_folder "my_folder"
+	folder Ctm_folder_phoneme "my_folder"
+	folder Textgrid_folder "my_folder"
+	folder Audio_folder "my_folder"
+	positive Limit 30
+endform
+appendInfoLine: ctm_folder$, ctm_folder_phoneme$, audio_folder$
+
+
+
+#dir$ = "/home/stipendiater/xinweic/Audio/scripts/ctms"
+dir$ = ctm_folder$
+dir_phoneme$ = ctm_folder_phoneme$
+#audiodir$ = "/home/stipendiater/xinweic/Audio/lbi/13468"
+audiodir$ = audio_folder$ 
+textgriddir$ = textgrid_folder$ 
+
+Create Strings as file list... list_txt 'dir$'/*.txt
+nFiles = Get number of strings
+
+if nFiles > limit
+	appendInfoLine: "nFiles exceeds limit"
+	nFiles = limit
+endif
+
+for i from 1 to nFiles
+	select Strings list_txt
+	filename$ = Get string... i
+	tname$ = filename$ - ".txt"
+	basename$ = replace$ (tname$, "lbi-", "", 0)
+	appendInfoLine: "start processing: ", basename$
+	#appendInfoLine: basename$
+	txtname$ = filename$ - ".txt"
+	audiofile$ = audiodir$ + "/" + basename$ + ".flac" 
+	appendInfoLine: audiofile$
+	if not fileReadable (audiofile$)
+		appendInfoLine: "audioFile not found"
+		continue
+	endif
+	Read from file... 'audiodir$'/'basename$'.flac
+	dur_total = Get total duration
+	To TextGrid... "kaldi"
+	select TextGrid 'basename$'
+	Insert interval tier... 2
+
+	#pause 'txtname$'
+
+	select Strings list_txt
+	Read Table from whitespace-separated file... 'dir$'/'txtname$'.txt
+	Rename... times
+	nRows = Get number of rows
+	Sort rows... start
+	for j from 1 to nRows
+		select Table times
+		startutt_col$ = Get column label... 3
+		start_col$ = Get column label... 3
+		dur_col$ = Get column label... 4
+		phone_col$ = Get column label... 5
+		if j < nRows
+			startnextutt = Get value... j+1 'startutt_col$'
+		else
+			startnextutt = 0
+		endif
+		start = Get value... j 'start_col$'
+		phone$ = Get value... j 'phone_col$'
+		dur = Get value... j 'dur_col$'
+		end = start + dur
+		select TextGrid 'basename$'
+		int = Get interval at time... 2 start+0.005
+		if start = 0 & startnextutt != 0
+			Set interval text... 2 int 'phone$'
+		elif start != 0 
+			Insert boundary... 2 start
+			Set interval text... 2 int+1 'phone$'
+		else
+			
+		endif
+		#pause
+	endfor
+	#pause
+
+	Read Table from whitespace-separated file... 'dir_phoneme$'/'txtname$'.txt
+	Rename... times_phoneme
+	nRows = Get number of rows
+	Sort rows... start
+	for j from 1 to nRows
+		select Table times_phoneme
+		startutt_col$ = Get column label... 3
+		start_col$ = Get column label... 3
+		dur_col$ = Get column label... 4
+		phone_col$ = Get column label... 5
+		if j < nRows
+			startnextutt = Get value... j+1 'startutt_col$'
+		else
+			startnextutt = 0
+		endif
+		start = Get value... j 'start_col$'
+		phone$ = Get value... j 'phone_col$'
+		dur = Get value... j 'dur_col$'
+		end = start + dur
+		select TextGrid 'basename$'
+		int = Get interval at time... 1 start+0.005
+		if start = 0 & startnextutt != 0
+			Set interval text... 1 int 'phone$'
+		elif start != 0 
+			Insert boundary... 1 start
+			Set interval text... 1 int+1 'phone$'
+		else
+			
+		endif
+		#pause
+	endfor
+	Write to text file... 'textgriddir$'/'basename$'.combined.TextGrid
+	select Table times
+	plus Table times_phoneme
+	plus Sound 'basename$'
+	plus TextGrid 'basename$'
+	Remove
+endfor
