@@ -16,6 +16,7 @@ generate_dict() {
   keepStress=$3
   dict=$4
   if [ $keepStress == "True" ]; then
+	  #$i ~ frm will mess up G<->NG, R<->ER etc.
 	  gawk -v frm=$frm -v to=$to '{ a=$1"\t"; for(i=2; i<=NF; i++) { if ($i ~ frm) {match($i, /[A-Z]+([0-9])*/, ary); { a=a to ary[1] " "}} else {a=a $i " "}} {print substr(a, 1, length(a)-1)}}' $dict | sort -u > ./out/$1_$2.lex
   elif [ $keepStress == "False" ]; then
 	  gawk -v frm=$frm -v to=$to '{ a=$1"\t"; for(i=2; i<=NF; i++) { if ($i ~ frm) {a=a to " "} else {a=a $i " "}} {print substr(a, 1, length(a)-1)}}' $dict | sort -u > ./out/$1_$2.lex

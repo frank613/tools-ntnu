@@ -16,11 +16,11 @@ for dir in ${dirlist[*]};do
 		echo "bad-dir-name"
 		continue
 	fi
-	if [ -d output/${fro_to[1]} ];then
+	if [ -d output3/${fro_to[1]} ];then
 		continue
 	fi
-	mkdir -p output/${fro_to[1]}
-	python analyze_gop.py $dir/gop.score.all.symbol  $gop_cano ${fro_to[0]} ${fro_to[1]}
+	mkdir -p output3/${fro_to[1]}
+	python analyze_gop2.py $dir/gop.score.all.symbol  $gop_cano ${fro_to[0]} ${fro_to[1]}
 done
 
 

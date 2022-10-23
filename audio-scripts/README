@@ -1,0 +1,16 @@
+#split the CTM to pieces
+python splitAlignments.py all.words.ctm ctms-words
+
+#add the header
+./add_header.sh header.txt ./ctm-word2/
+
+#log into praat machine and run
+/Applications/Praat.app/Contents/MacOS/Praat --run "./createtextgrid.praat.txt"
+
+/Applications/Praat.app/Contents/MacOS/Praat --run "./word_textgrid.praat.txt" ctm-word2 "../../Audio/lbi/134686"
+
+# or combined
+/Applications/Praat.app/Contents/MacOS/Praat --run "./combined_textgrid.praat.txt" ctm-word2 ctms-2  "../../Audio/lbi/134686" 30
+
+# on Linux with wrapper
+./wrapper.sh /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/mono_ali/AA_S_ctm ./out /home/stipendiater/xinweic/Audio/lbi/134686
