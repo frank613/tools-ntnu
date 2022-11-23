@@ -82,11 +82,11 @@ def plot(df_labels, from_phoneme, phoneme):
     ax.set_title('phoneme {0}, substitue from {1}'.format(phoneme, from_phoneme))
 
     html_str = mpld3.fig_to_html(fig)
-    Html_file= open("./output3/{0}/{1}.html".format(phoneme, from_phoneme),"w")
+    Html_file= open("./output_v2/{0}/{1}.html".format(phoneme, from_phoneme),"w")
     Html_file.write(html_str)
     Html_file.close()     
 
-    plt.savefig("./output3/{0}/{1}.png".format(phoneme, from_phoneme))
+    plt.savefig("./output_v2/{0}/{1}.png".format(phoneme, from_phoneme))
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:

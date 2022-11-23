@@ -2,15 +2,17 @@ import matplotlib
 #matplotlib.use('TkAgg')
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import mpld3
 import sys
+import os
 import re
 import pandas as pd
 sys.path.append('/home/stipendiater/xinweic/tools/edit-distance')
 from edit import edit_dist
+from edit import get_sub_pair_list 
 from sklearn import metrics
+import pdb
 
-re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
+re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)?')
 #for each phone in the GOP file:
     #label "S" if it's a substitution error based on the other input files.
     #label "D" if it's a deletion error based on the other input files.
@@ -21,6 +23,7 @@ def labelError(GOP_file, cano_file, tran_file):
     cano_df = readTRANToDF(cano_file)
     tran_df = readTRANToDF(tran_file)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
+    confusion_map = {} #each entry is a cano->{p:count}
     #outer loop is the cano df because it is extracted from the gop file and they should have the same number of uttids
     for index, row in cano_df.iterrows(): 
         uttid = row['uttid']
@@ -44,11 +47,17 @@ def labelError(GOP_file, cano_file, tran_file):
 
         extended = [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(gop_df.loc[gop_df['uttid'] == uttid, 'seq-score'].tolist()[0]) ]
         df = df.append(pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid']))
+        ##v2 adding statistics for error prons
+        sub_list = get_sub_pair_list(cano_seq, tran_seq, labels)
+        for canoP, tranP in sub_list:
+            if canoP not in confusion_map.keys():
+                confusion_map[canoP] = {tranP:1}
+            elif tranP not in  confusion_map[canoP].keys():
+                confusion_map[canoP][tranP] = 1
+            else:
+                confusion_map[canoP][tranP] += 1
 
-    return df
-
-
-    
+    return (df,confusion_map)
 
 
 def readGOPToDF(ark_file):
@@ -92,56 +101,44 @@ def readTRANToDF(tran_file):
 
 plt.rcParams["figure.autolayout"] = True
 #allowed_phonemes = ["OY", "AA", "SH", "EH"]
-allowed_phonemes = ["AA"]
-def plot(df_labels, phoneme='all'):
+#allowed_phonemes = ["AA", "AO"]
+def plot(df_labels, con_map, phoneme='all'):
     allowed_phonemes = df_labels["phonemes"].unique()
     #plt.rcParams["figure.autolayout"] = True
     allLabels = [ df_labels.loc[df_labels["phonemes"] == i,["scores","labels"]].to_numpy() for i in allowed_phonemes]
     dAndS = [ df_labels.loc[(df_labels["phonemes"] == i) & (df_labels['labels'].isin(["S", "D"])), "scores"].to_numpy() for i in allowed_phonemes]
-    assert(len(allLabels) == len(dAndS) and len(allLabels) != 0)
-    #plt.legend(loc='upper right')
-    if len(allLabels) == 1:
-        fig, ax = plt.subplots(1, 1)
-        ax.hist(allLabels[0][:, 0], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='all')
-        ax.hist(dAndS[0], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='error')
-        if len(allLabels[0]) != 0:
-            ax.axvline(allLabels[0][:, 0].mean(), color='k', linestyle='dashed', linewidth=2, label='all-mean')
-        if len(dAndS[0]) != 0:
-            ax.axvline(dAndS[0].mean(), color='k', linestyle='dashed', linewidth=1, label='error-mean')
+    allC = [ df_labels.loc[(df_labels["phonemes"] == i) & (df_labels['labels'].isin(["C"])), "scores"].to_numpy() for i in allowed_phonemes]
+
+    auc_vector = []
+    fig, axs = plt.subplots(len(allLabels), figsize=(12,4*len(allLabels)))
+    #plt.rcParams["figure.autolayout"] = True
+    for idx,ax in enumerate(axs):
+        ax.hist(allC[idx], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, color='g', label='{0} canonical phonemes'.format(len(allC[idx])))
+        if allowed_phonemes[idx] in con_map.keys():
+            freq_dict = con_map[allowed_phonemes[idx]]
+            pNum = min(3, len(freq_dict))
+            p_list = ','.join(sorted(freq_dict, key=freq_dict.get, reverse=True)[:pNum])
+        else: 
+            p_list = 'EMPT#Y'
+        ax.hist(dAndS[idx], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, color='r', label='{0} sub/dels, top subs: {1}'.format(len(dAndS[idx]), p_list))
+        if len(allC[idx]) != 0:
+            ax.axvline(allC[idx].mean(), color='g', linestyle='dashed', linewidth=2, label='all-mean')
+        if len(dAndS[idx]) != 0:
+            ax.axvline(dAndS[idx].mean(), color='r', linestyle='dashed', linewidth=1, label='total error-mean, diff: {0}'.format(allC[idx].mean() - dAndS[idx].mean()))
         ax.legend(loc ="upper left")
-        auc_value = auc_cal(allLabels[0])
-        ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[0], auc_value))
+        auc_value = auc_cal(allLabels[idx])
+        ax.set_title('phoneme {0}, total AUC = {1}'.format(allowed_phonemes[idx], auc_value))
         if auc_value != 'NoDef':  ##exclude the phonemes that have only one lable
-            print("average auc = {0}".format(auc_value))
-        else:
-            print("auc not available for currrent phoneme")
-
+            auc_vector.append(auc_value)
+    if len(auc_vector) != 0:
+        print("average auc = {0}".format(sum(auc_vector)/len(auc_vector)))
     else:
-        auc_vector = []
-        fig, axs = plt.subplots(len(allLabels), figsize=(10,3*len(allLabels)))
-        plt.rcParams["figure.autolayout"] = True
-        for idx,ax in enumerate(axs):
-            ax.hist(allLabels[idx][:, 0], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='all')
-            ax.hist(dAndS[idx], density=True, range=[-100, 10], bins=100, histtype='stepfilled', alpha=0.5, label='error')
-            if len(allLabels[idx]) != 0:
-                ax.axvline(allLabels[idx][:, 0].mean(), color='k', linestyle='dashed', linewidth=2, label='all-mean')
-            if len(dAndS[idx]) != 0:
-                ax.axvline(dAndS[idx].mean(), color='k', linestyle='dashed', linewidth=1, label='error-mean')
-            ax.legend(loc ="upper left")
-            auc_value = auc_cal(allLabels[idx])
-            ax.set_title('phoneme {0}, AUC = {1}'.format(allowed_phonemes[idx], auc_value))
-            if auc_value != 'NoDef':  ##exclude the phonemes that have only one lable
-                auc_vector.append(auc_value)
-        if len(auc_vector) != 0:
-            print("average auc = {0}".format(sum(auc_vector)/len(auc_vector)))
-        else:
-            print("auc not available for current phonemes")
+        print("auc not available for current phonemes")
 
-    html_str = mpld3.fig_to_html(fig)
-    Html_file= open("{0}.html".format(phoneme),"w")
-    Html_file.write(html_str)
-    Html_file.close()
-            
+    outFile = "./out-error-cmu/all.png"
+    os.makedirs(os.path.dirname(outFile), exist_ok=True)
+    plt.savefig(outFile)    
+
 def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
     labels = [ 0 if i == "C" else 1  for i in array[:, 1]]
     if len(set(labels)) <= 1:
@@ -154,7 +151,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 4:
         sys.exit("this script takes 3 arguments <GOP file> <cano phone-seq-file> <transcribed phoneme-seq file> . It labels the phonemes and plot the points with the labels")
 
-    df_labels = labelError(sys.argv[1], sys.argv[2], sys.argv[3])
-    plot(df_labels)
+    df_labels, con_map = labelError(sys.argv[1], sys.argv[2], sys.argv[3])
+    plot(df_labels, con_map)
     #showGOP(df_gop)
 

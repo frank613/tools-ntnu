@@ -51,13 +51,33 @@ def edit_dist(ref_sent, input_sent):
     return (dist, sequence)
     
 
-
+def get_sub_pair_list(refS, inS, label):
+    pair_list = []
+    rf_idx=0
+    in_idx=0
+    for lb in label:
+        if lb == 'C':
+            rf_idx += 1
+            in_idx += 1
+        elif lb == 'S':
+            pair_list.append((refS[rf_idx], inS[in_idx]))
+            rf_idx += 1
+            in_idx += 1
+        elif lb == 'I':
+            in_idx +=1
+        elif lb == 'D':
+            rf_idx += 1
+    return pair_list
 
 
 if __name__ == "__main__":
 
     input_sent = "a b c d e f g"
+    print("In: " + input_sent)
     #input_sent = "b c"
-    ref_sent =   "a b b c d e"
+    ref_sent =   "a b b h d e o"
+    print("Ref: " + ref_sent)
     #ref_sent =   "b e"
-    edit_dist(ref_sent.split(), input_sent.split())
+    d,s = edit_dist(ref_sent.split(), input_sent.split())
+    print("Label: " + ' '.join(s))
+    print(get_sub_pair_list(ref_sent.split(), input_sent.split(), s))
