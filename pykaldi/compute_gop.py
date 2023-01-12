@@ -82,7 +82,7 @@ def compute_like_replaced(acMod, trMod, transSeq, tree, toP_id, featureSeq):
         sys.exit("length of features and transition-ids are not matching")
     results = 0 
     for t_id, features in zip(transSeq, featureSeq): 
-        ##monophone model here 
+        ##monophone model here, only one elment in the context window 
         pdf_id = tree.compute([toP_id], trMod.transition_id_to_pdf_class(t_id))
         results += acMod.log_likelihood(pdf_id, features)
     return results

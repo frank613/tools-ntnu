@@ -1,0 +1,7 @@
+gop-env
+. ./path.sh
+python compute_gop.py "ark:gunzip -c /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm/ali.1.gz |" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/lang_nosp/phones.txt /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/gop_combined AA "ark,t:/localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/gop_denominator/decode/best.ali.1.txt"
+
+python compute_gop_noDecode_libri.py "ark:gunzip -c /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm/ali.1.gz |" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/lang_nosp/phones.txt /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/gop_combined gop-no-decode-scripts/version2/L_for_denom.fst gop-no-decode-scripts/version2/words.txt
+
+python analyze_gop_nodecode.py "ark:gunzip -c /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm/ali.1.gz |" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/ali_mono_align_ctm /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/lang_nosp/phones.txt /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/gop_combined gop-no-decode-scripts/version2/L_for_denom.fst gop-no-decode-scripts/version2/words.txt analyze-gop-nozero/all.png

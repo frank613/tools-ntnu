@@ -1,0 +1,1 @@
+/localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/lang_nosp/phones.txt
