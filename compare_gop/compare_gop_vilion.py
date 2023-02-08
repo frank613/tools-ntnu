@@ -4,6 +4,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import os
 import pdb
 
@@ -41,15 +42,23 @@ def plot(df, data_labels):
     fig, axs = plt.subplots(len(all_phonemes), figsize=(12,4*len(all_phonemes)))
     for phoneme,ax in zip(all_phonemes, axs):
         data = [ df.loc[(df["phoneme"] == phoneme) & (df["label"] == lb), 'score'].to_numpy() for lb in label]
-        #ax.boxplot(data, 0, 'rs', 0, labels = ['CMU', 'LIB'])
-        ax.boxplot(data, 0, 'rs', 0, labels = data_labels)
+        #ax.boxplot(data, 0, 'rs', 0, labels = data_labels)
+        plot_labels=[]
+        for row,lb,pos in zip(data,label,range(len(label))):
+            #pdb.set_trace()
+            add_label(ax.violinplot(row,vert=False, quantiles=[0.25,0.5,0.75], positions=[pos]), data_labels[lb-1], plot_labels)
         ax.set_title('Gop distribution for phoneme: ' + phoneme)
-    outFile = "./out-compare-dnn/all_vox.png"
+        ax.legend(*zip(*plot_labels), loc=2)
+    outFile = "./out-compare-dnn-vilion/all.png"
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
     plt.savefig(outFile)
         
 
     print("done")
+
+def add_label(violin, label, labels):
+    color = violin["bodies"][0].get_facecolor().flatten()
+    labels.append((mpatches.Patch(color=color), label))
 
 if __name__ == "__main__":
     if len(sys.argv) <= 1 :
