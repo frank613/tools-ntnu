@@ -45,11 +45,10 @@ def plot(df, data_labels):
         #ax.boxplot(data, 0, 'rs', 0, labels = data_labels)
         plot_labels=[]
         for row,lb,pos in zip(data,label,range(len(label))):
-            #pdb.set_trace()
             add_label(ax.violinplot(row,vert=False, quantiles=[0.25,0.5,0.75], positions=[pos]), data_labels[lb-1], plot_labels)
         ax.set_title('Gop distribution for phoneme: ' + phoneme)
         ax.legend(*zip(*plot_labels), loc=2)
-    outFile = "./out-compare-dnn-vilion/all.png"
+    outFile = "./out-compare-dnn-vilion/all-mono-GMM-frame.png"
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
     plt.savefig(outFile)
         
