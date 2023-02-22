@@ -9,6 +9,7 @@ import os
 import pdb
 import numpy as np
 from sklearn import metrics
+import json
 
 def readGOPToDF(df, gop_file, method):
     temp_list = []
@@ -21,7 +22,7 @@ def readGOPToDF(df, gop_file, method):
             temp_list.append([fields[1], round(float(fields[2]),3), fields[3], method])
     return df.append(pd.DataFrame(temp_list, columns=('phoneme','score','label', 'method')))
             
-def plot(df,outFile):
+def plot(df, json_dict, outFile):
     methods = df['method'].unique()
     all_phonemes = df['phoneme'].unique()
     fig, axs = plt.subplots(len(all_phonemes), len(methods), figsize=(20, 4*len(all_phonemes)))
@@ -37,9 +38,20 @@ def plot(df,outFile):
             ax.set_xlim([-70, 5])
             ax.set_xlim([-70, 5])
             ax.set_title(mtd + ', Gop for phoneme: ' + phoneme)
+            ax.get_yaxis().set_visible(False)
             auc_value = auc_cal(np.concatenate((data_true, data_false), axis=0))
             auc_artist, = plt.plot([], [])
-            ax.legend(*zip(*(plot_labels+[(auc_artist, "AUC = {}".format(auc_value))])), loc=2)
+            auc_label = (auc_artist, "AUC = {}".format(auc_value))
+            if phoneme in json_dict[mtd]["phonemes"].keys(): 
+                #p:(closest_phoneme, mean_diff, auc_value, entropy, count_of_real, count_of_error)
+                entropy = json_dict[mtd]["phonemes"][phoneme][3]
+                auc_teacher = json_dict[mtd]["phonemes"][phoneme][2]
+                L = round(entropy*auc_teacher, 3)
+                json_artist, = plt.plot([], [])
+                json_label = (json_artist, "E={}, A={}, L={}".format(entropy, auc_teacher, L))
+                ax.legend(*zip(*(plot_labels+[auc_label, json_label])), loc=2)
+            else:
+                ax.legend(*zip(*(plot_labels+[auc_label])), loc=2)
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
     plt.savefig(outFile)
 
@@ -56,15 +68,22 @@ def add_label(violin, method, labels):
     color = violin["bodies"][0].get_facecolor().flatten()
     labels.append((mpatches.Patch(color=color), method))
 
+def read_json(path):
+    with open(path,"r") as injson:
+        return json.load(injson)
+
 if __name__ == "__main__":
     if len(sys.argv) <= 1 :
-        sys.exit("this script takes <labeled GOP file 1> <labeled GOP file 2> <labeled GOP file 3>... <output-file> as arguments. It plots the GOP distributions for each phoneme")
+        sys.exit("this script takes <labeled GOP file 1> <json file1> <labeled GOP file 2> <json file2>... <output-file> as arguments. It plots the GOP distributions for each phoneme")
 
     df = pd.DataFrame(columns=('phoneme','score','label', 'method'))
-    methods =  ['GMM-mono', 'GMM-mono-frame', 'DNN-mono', 'DNN-tri']
-    assert(len(methods) == len(sys.argv) - 2)
-    for i in range(1,len(sys.argv)-1):
-        df = readGOPToDF(df, sys.argv[i], methods[i-1])
+    #methods =  ['GMM-mono', 'GMM-mono-frame', 'DNN-mono', 'DNN-tri']
+    methods =  ['GMM-mono',  'DNN-tri']
+    json_dict = { mtd:None for mtd in methods}
+    assert(len(methods) == (len(sys.argv) - 2)/2)
+    for i,mtd in enumerate(methods):
+        df = readGOPToDF(df, sys.argv[2*i+1], mtd)
+        json_dict[mtd] = read_json(sys.argv[2*i+2])
         print("read one GOP")
 
-    plot(df, sys.argv[-1])
+    plot(df, json_dict, sys.argv[-1])
