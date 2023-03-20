@@ -2,15 +2,30 @@ import sys
 import re
 import pandas as pd
 sys.path.append('/home/stipendiater/xinweic/tools/edit-distance')
-from edit import edit_dist
+import edit 
 import pdb
+import numpy as np
+from sklearn import metrics
+import json
+import os
+
 
 re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
+#store all the sub pairs
 #for each phone in the GOP file:
     #label "S" if it's a substitution error based on the other input files.
     #label "D" if it's a deletion error based on the other input files.
     #label "C" if it's the same in both files
-    
+
+def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
+    labels = [ 0 if i == 'C' else 1  for i in array[:, 1]]
+    if len(set(labels)) <= 1:
+        return "NoDef"
+    else:
+        #negative because GOP is negatively correlated to the probablity of making an error
+        return round(metrics.roc_auc_score(labels, -array[:, 0]),3)
+
+
 def labelError(GOP_file, error_list, cano_file, tran_file):
     gop_df = readGOPToDF(GOP_file)
     cano_df = readTRANToDF(cano_file)
@@ -19,6 +34,7 @@ def labelError(GOP_file, error_list, cano_file, tran_file):
     tran_list = tran_df['uttid'].unique()
     gop_list = gop_df['uttid'].unique()
     extended = []
+    sub_list = []
     #outer loop is the cano df because it is extracted from the gop file and they should have the same number of uttids
     for index, row in cano_df.iterrows(): 
         uttid = row['uttid']
@@ -31,7 +47,8 @@ def labelError(GOP_file, error_list, cano_file, tran_file):
         if len(tran_df_filtered) != 1:
             sys.exit("duplicate uttids detected in the transcription file, check the input")
         tran_seq = tran_df_filtered.tolist()[0] #[0] converts 2d list to 1d
-        dist, labels = edit_dist(cano_seq, tran_seq)
+        dist, labels = edit.edit_dist(cano_seq, tran_seq)
+        sub_list += edit.get_sub_pair_list(cano_seq, tran_seq, labels)
         #print(cano_seq)
         #print(tran_seq)
         if dist == 0:
@@ -50,8 +67,47 @@ def labelError(GOP_file, error_list, cano_file, tran_file):
         #pdb.set_trace()
         extended += [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(gop_df.loc[gop_df['uttid'] == uttid, 'seq-score'].tolist()[0]) ]
     df = df.append(pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid']))
+    #json
+    #p:(auc_value, frequent_sub, mean, std, count_of_del, count_of_sub, total_count)
+    out_form = { \
+                'phonemes':{},
+                'summary': {"average-mean": None, "average-std": None, "average-AUC": None}}
+    
+    #pdb.set_trace()
+    p_replace_set = np.append(df['phonemes'].unique(), '*')
+    pair_dict = {phoneme_out: { phoneme_in: 0 for phoneme_in in p_replace_set} for phoneme_out in p_replace_set}
+    for pair in sub_list:
+        l,r = pair.split(' -> ')
+        if l not in p_replace_set or r not in p_replace_set:
+            continue
+        pair_dict[l][r] += 1
 
-    return df
+    total_mean=0
+    total_std=0
+    total_auc=0
+    for phoneme in df['phonemes'].unique():
+        data_false = df.loc[(df["phonemes"] == phoneme) & (df["labels"] == 'C'), ['scores', 'labels']].to_numpy()
+        data_true = df.loc[(df["phonemes"] == phoneme) & (df["labels"] != 'C'), ['scores','labels']].to_numpy()
+        auc_value = auc_cal(np.concatenate((data_true, data_false), axis=0))
+        total_auc += auc_value
+        sorted_items = sorted(pair_dict[phoneme].items(), key=lambda kv: kv[1], reverse=True)
+        freq_sub =  sorted_items[0][0] if sorted_items[0][0]!='*' else sorted_items[1][0]
+        mean = df.loc[(df["phonemes"] == phoneme),"scores"].mean()
+        total_mean += mean
+        std = df.loc[(df["phonemes"] == phoneme),"scores"].std()
+        total_std += std
+        num_del = len(df.loc[(df["phonemes"] == phoneme) & (df["labels"] == 'D')])
+        num_sub = len(df.loc[(df["phonemes"] == phoneme) & (df["labels"] == 'S')])
+        num_total = len(df.loc[df["phonemes"] == phoneme])
+        out_form["phonemes"][phoneme]=(auc_value, freq_sub, mean, std, num_del, num_sub, num_total)
+
+    num_phonemes = len(df['phonemes'].unique())
+    out_form["summary"]["average-mean"]=total_mean/num_phonemes
+    out_form["summary"]["average-std"]=total_std/num_phonemes
+    out_form["summary"]["average-AUC"]=total_auc/num_phonemes
+
+    return out_form
+
 
 
     
@@ -99,7 +155,7 @@ def readTRANToDF(tran_file):
 
 if __name__ == "__main__":
     if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <GOP file> <error-uttid-list> <cano phone-seq-file> <transcribed phoneme-seq file> <outFile>. It labels the phonemes in the GOP file with substitution or deletetion error based on edit distance")
+        sys.exit("this script takes 5 arguments <GOP file> <error-uttid-list> <cano phone-seq-file> <transcribed phoneme-seq file> <outJson>. It labels the phonemes in the GOP file and output a summary in json format")
 
     utt_list = []
     with open(sys.argv[2]) as ifile:
@@ -109,5 +165,8 @@ if __name__ == "__main__":
                 if len(fields) != 1:
                     sys.exit("wrong input line")
                 utt_list.append(fields[0])
-    df_labels = labelError(sys.argv[1], utt_list, sys.argv[3], sys.argv[4])
-    df_labels.to_csv(sys.argv[5], header=None, index=True, sep=' ', mode='a')
+    json_dict = labelError(sys.argv[1], utt_list, sys.argv[3], sys.argv[4])
+    os.makedirs(os.path.dirname(sys.argv[5]), exist_ok=True)
+    with open(sys.argv[5], "w") as f:
+        json.dump(json_dict, f)
+

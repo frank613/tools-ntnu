@@ -1,4 +1,5 @@
 import sys
+import pdb
 #from enum import Enum
 
 #class pType(Enum):
@@ -11,21 +12,24 @@ def main(fIn,fMap):
     map_file = open(fMap, 'r')
     pDict = {}
     for line in map_file:
-        fields  = line.split()
+        fields  = line.strip().split('\t')
         if len(fields) == 0 or len(fields) > 2:
             sys.exit("illegal line in the map file, must be one ortwo columns")
         elif len(fields) == 1:
             continue
         else:
-            pDict.update({fields[0].upper():fields[1].upper()})
+            pDict.update({fields[0].upper():fields[1].upper().split(' ')})
 
     in_file = open(fIn, 'r')
     for line in in_file:
-        fields = line.split()
+        fields = line.strip().split()
         if len(fields) != 2:
                 sys.exit("illegal line in the input file")
         pSet = fields[1].split(';')
-        pSet_mapped = [pDict.get(p, p) for p in pSet]
+        pList_mapped = [pDict.get(p, [p]) for p in pSet]
+        pSet_mapped = []
+        for lst in pList_mapped:
+            pSet_mapped += lst
         print("{0} {1}".format(fields[0], (';').join(pSet_mapped)) )
 
 

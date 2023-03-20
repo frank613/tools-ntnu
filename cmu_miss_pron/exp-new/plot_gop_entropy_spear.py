@@ -145,5 +145,5 @@ if __name__ == "__main__":
         json_dict[mtd] = read_json(sys.argv[2*i+2])
         print("read one GOP")
 
-    spear_average = plot(df, json_dict, sys.argv[-1], 0.5, 3.5)
+    spear_average = plot(df, json_dict, sys.argv[-1], 1, 1)
     print("spear coef diff average = {} ".format(spear_average))

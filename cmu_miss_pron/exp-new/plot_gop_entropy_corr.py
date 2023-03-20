@@ -99,8 +99,8 @@ def print_corr(corr_df):
         diff_auc_t = corr_df.loc[corr_df["method"]==pair[0], "AUC_t"].to_numpy() - corr_df.loc[corr_df["method"]==pair[1], "AUC_t"].to_numpy()
         diff_auc_stud = corr_df.loc[corr_df["method"]==pair[0], "AUC_stud"].to_numpy() - corr_df.loc[corr_df["method"]==pair[1], "AUC_stud"].to_numpy() 
         #relative diff
-        diff_auc_t = diff_auc_t / corr_df.loc[corr_df["method"]==pair[1], "AUC_t"].to_numpy()
-        diff_auc_stud = diff_auc_stud / corr_df.loc[corr_df["method"]==pair[1], "AUC_stud"].to_numpy()
+        #diff_auc_t = diff_auc_t / corr_df.loc[corr_df["method"]==pair[1], "AUC_t"].to_numpy()
+        #diff_auc_stud = diff_auc_stud / corr_df.loc[corr_df["method"]==pair[1], "AUC_stud"].to_numpy()
         print(np.corrcoef(diff_auc_t, diff_auc_stud))
         print("correlation between the diff of the L and the diff of AUC-student the first two methods")
         diff_L = corr_df.loc[corr_df["method"]==pair[0], "L"].to_numpy() - corr_df.loc[corr_df["method"]==pair[1], "L"].to_numpy()
@@ -117,7 +117,8 @@ if __name__ == "__main__":
 
     df = pd.DataFrame(columns=('phoneme','score','label', 'method'))
     #methods =  ['GMM-mono', 'GMM-mono-frame', 'DNN-mono', 'DNN-tri']
-    methods =  ['GMM-mono-align', 'GMM-mono-frame', 'DNN-mono',  'DNN-tri']
+    #methods =  ['GMM-mono-align', 'GMM-mono-frame', 'DNN-mono',  'DNN-tri']
+    methods =  ['DNN-mono',  'DNN-tri']
     json_dict = { mtd:None for mtd in methods}
     assert(len(methods) == (len(sys.argv) - 2)/2)
     for i,mtd in enumerate(methods):
@@ -125,6 +126,6 @@ if __name__ == "__main__":
         json_dict[mtd] = read_json(sys.argv[2*i+2])
         print("read one GOP")
 
-    corr_df = plot(df, json_dict, sys.argv[-1], 0.5, 3.5)
+    corr_df = plot(df, json_dict, sys.argv[-1], 0.5, 3)
 
     print_corr(corr_df)

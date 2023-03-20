@@ -1,4 +1,5 @@
 import sys
+import pdb
 
 def get_dist(ref_sent, input_sent, ref_idx, input_idx, dp_matrix):
     if dp_matrix[ref_idx][input_idx] is not None:
@@ -60,12 +61,14 @@ def get_sub_pair_list(refS, inS, label):
             rf_idx += 1
             in_idx += 1
         elif lb == 'S':
-            pair_list.append((refS[rf_idx], inS[in_idx]))
+            pair_list.append("{} -> {}".format(refS[rf_idx], inS[in_idx]))
             rf_idx += 1
             in_idx += 1
         elif lb == 'I':
+            pair_list.append("* -> {}".format(inS[in_idx]))
             in_idx +=1
         elif lb == 'D':
+            pair_list.append("{} -> *".format(refS[rf_idx]))
             rf_idx += 1
     return pair_list
 
