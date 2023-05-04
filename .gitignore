@@ -1,3 +1,4 @@
 /audio-scripts/*
 /compare_gop/out*
 *.txt
+/replace-dict-analysis/*
