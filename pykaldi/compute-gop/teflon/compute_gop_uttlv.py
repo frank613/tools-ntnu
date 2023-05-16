@@ -93,39 +93,27 @@ def compute_like_replaced(acMod, trMod, transSeq, tree, toP_id, featureSeq):
     # transition_id_to_transition_index(trans_id:int) → int
     # transition_id_to_transition_state(trans_id:int) → int
 
-def get_likeli_from_lat(acMod, trMod, lat, featureSeq):  #return a floatvector
-    #num_states = lat.NumStates()
-    count = 0
-    tran_seq = []
-    #for s in LatticeVectorFstStateIterator(lat):
+def get_likeli_from_lat(lat, length):  #return a float 
+    results = 0 
+    count = 0 
     for s, state in enumerate(lat.states()):
         #for arc in LatticeVectorFstMutableArcIterator(lat,s):
         for arc in lat.arcs(s):
             if arc.nextstate != s + 1:
                 sys.exit("not sorted or not best path ")
-            if arc.ilabel != 0:
-                count +=1
-                tran_seq.append(arc.ilabel)
-
-    if len(featureSeq) != len(tran_seq):
-        sys.exit("length of features and transition-ids are not matching")
-    results = []
-    for t_id,features in zip(tran_seq, featureSeq):
-        results.append(acMod.log_likelihood(trMod.transition_id_to_pdf(t_id), features))
-
+            #results += arc.weight.value1
+            if arc.weight.value2 != 0:
+                count += 1
+            results += arc.weight.value2
+    assert count == length
     return results
 
-def writes(gop_list, key_list):
-    assert(len(gop_list) == len(key_list))
-    outFile = "./output-teflon/all.gop.lattice.full"
+def writes(res_dict):
+    outFile = "./output-teflon/likeratio_utt.gop"
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
     with open(outFile, 'w') as fw:
-        for key, gop in zip(key_list, gop_list):
-            fw.write(key+'\n')
-            for i, (p,score, n, d) in enumerate(gop):
-                #fw.write("%s\t%.3f_%.3f_%.3f\n"%(p,score,n,d))
-                fw.write("%d %s %.3f\n"%(i,p,score))
-            fw.write("\n")
+        for key, v in res_dict.items():
+            fw.write("%s %.3f\n"%(key,v))
 
 
 
@@ -134,7 +122,7 @@ if __name__ == "__main__":
     print(sys.argv)
     if len(sys.argv) != 6:
         sys.exit("this script takes 5 arguments <cano-alignment file> <model-dir> <phones.txt> <data-dir> <lattice-1best>.\n \
-        , it writes out the gop score for each phoneme based on the segmentation of the cano-alignment") 
+        , it writes out the average likelihood ratio of the whole utterance") 
     #step 0, read the files
     trans_m, acoustic_m = GmmAligner.read_model(sys.argv[2]+"/final.mdl")
     # #or using this style
@@ -172,32 +160,21 @@ if __name__ == "__main__":
           for num_done, (key, vec) in enumerate(reader):
               lat_dict.update({key:vec})
 
-    gops_list = []  # gops(|uttid|x|phoneme-seq|)
-    key_list= []
+    res_dict={}
     with SequentialMatrixReader(feats_rspecifier) as f:
         for fkey, feats in f:
             if fkey not in align_dict or fkey not in lat_dict:
                 #print("ignore uttid: " + fkey + ", no alignment can be found")
                 continue
-            #step one, segmentation (segmented: list[list[int]])
-            done, segmented = split_to_phones(trans_m, align_dict[fkey])
-            if not done:
-                sys.exit("split to phones failed")
-            key_list.append(fkey)
-            gops_list.append([])
-            pid_seq = seg_to_phonemelist(segmented, trans_m)
+            #step one compute the likelihood for numerator 
+            num_lik = compute_like_sum(acoustic_m, trans_m, align_dict[fkey], feats)
             #step two, get the denom likelihood from lattice
-            denom_lik = get_likeli_from_lat(acoustic_m, trans_m, lat_dict[fkey], feats)
-            #step three compute the likelihood for numerator 
-            for order, (p_id,start_idx) in enumerate(pid_seq):
-                length_seg = len(segmented[order])
-                denom_sum = sum(denom_lik[start_idx:start_idx + len(segmented[order])])
-                p_sym_raw = p_map.get_raw_symbol(p_id)
-                p_sym = p_map.get_symbol(p_id)
-                num_lik = compute_like_sum(acoustic_m, trans_m, segmented[order], feats[start_idx: start_idx + length_seg])
-                gops_list[len(key_list)-1].append((p_sym, (num_lik - denom_sum )/length_seg, num_lik, denom_sum))
-    writes(gops_list, key_list)
+            denom_lik = get_likeli_from_lat(lat_dict[fkey], len(align_dict[fkey]))
+            assert fkey not in res_dict
+            res_dict[fkey] = (num_lik - denom_lik )/len(align_dict[fkey])
+    writes(res_dict)
     
+
 
 
 

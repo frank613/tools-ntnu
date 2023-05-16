@@ -52,6 +52,20 @@ def readGOP(gop_file, score_table):
             seq_score.append(cur_score)
     return df_temp
 
+def read_gop_utt(gop_file, score_table):
+    in_file = open(gop_file, 'r')
+    isNewUtt = True
+    skip = False
+    df_temp = []
+    for line in in_file:
+        line = line.strip()
+        fields = line.split(' ')
+        if fields[0] not in score_table:
+            continue
+        df_temp.append((fields[0], float(fields[1]) , score_table[fields[0]]))
+    return df_temp
+
+
 def read_anno(score_file):
     score_table = {}
     with open(score_file) as ifile:
@@ -126,34 +140,75 @@ def get_corr_dt_cat_cv(df):
     Y = df['label'].apply(str).to_numpy()
     corr_arr = np.zeros(N_SPLIT)
     n = 0
+    acc_sum = 0
+    UAR_sum = 0
     for train_ix, test_ix in kfold.split(X, Y):
         train_X, test_X = X[train_ix], X[test_ix]
         train_Y, test_Y = Y[train_ix], Y[test_ix]
         #pdb.set_trace()
-        #model = DecisionTreeClassifier(class_weight="balanced")
-        model = DecisionTreeClassifier(class_weight="balanced", max_depth=5)
+        model = DecisionTreeClassifier(class_weight="balanced")
+        #model = DecisionTreeClassifier(class_weight="balanced", max_depth=1)
         ##train_Y is now ordinal, thus regression tree is applied?
         model.fit(train_X.reshape(-1,1), train_Y)
         predict_Y = model.predict(test_X.reshape(-1,1)).astype(int)
         corr = round(np.corrcoef(test_Y.astype(int), predict_Y)[0,1],3)
         corr_arr[n] = corr
         print("the corr for fold {0} is {1}".format(n,corr))
-        evaluate_model(test_Y.astype(int), predict_Y)
+        acc, UAR = evaluate_model(test_Y.astype(int), predict_Y)
+        acc_sum += acc
+        UAR_sum += UAR
         n += 1
         
     print("the stratified-KFold-CV correaltion is {}".format(corr_arr.mean()))
+    print("the stratified-KFold-CV accuracy is {}".format(acc_sum/n))
+    print("the stratified-KFold-CV UAR(recall) is {}".format(UAR_sum/n))
 
-    #plt.scatter(X,Y)
-    #data = [ df.loc[df['label'] == i, "gop-avg" ].to_numpy() for i in [1,2,3,4,5]]
-    #plt.boxplot(data, 0, 'rs', 0, labels = ["1","2","3","4","5"])
-    #plt.savefig("./data.png")
+    plt.scatter(X,Y)
+    data = [ df.loc[df['label'] == i, "gop-avg" ].to_numpy() for i in [1,2,3,4,5]]
+    plt.boxplot(data, 0, 'rs', 0, labels = ["1","2","3","4","5"])
+    plt.savefig("./data.likeutt.png")
 
+
+def get_corr_no_skill(df):
+    kfold = StratifiedKFold(n_splits=N_SPLIT, shuffle=True, random_state=1)
+    X = df["gop-avg"].to_numpy()
+    Y = df['label'].apply(str).to_numpy()
+    corr_arr = np.zeros(N_SPLIT)
+    n = 0
+    acc_sum = 0
+    UAR_sum = 0
+    for train_ix, test_ix in kfold.split(X, Y):
+        train_X, test_X = X[train_ix], X[test_ix]
+        train_Y, test_Y = Y[train_ix], Y[test_ix]
+        cat, count = np.unique(train_Y, return_counts=True)
+        cum_prob = np.cumsum(count/count.sum())
+        #broadcasted distribution
+        rvec = np.random.uniform(size=(len(test_Y), 1))
+        predict_Y = np.argmax(rvec < cum_prob, axis=-1) + 1
+        corr = round(np.corrcoef(test_Y.astype(int), predict_Y)[0,1],3)
+        corr_arr[n] = corr
+        print("the corr for fold {0} is {1}".format(n,corr))
+        acc, UAR = evaluate_model(test_Y.astype(int), predict_Y)
+        acc_sum += acc
+        UAR_sum += UAR
+        n += 1
+        
+    print("the stratified-KFold-CV correaltion is {}".format(corr_arr.mean()))
+    print("the stratified-KFold-CV accuracy is {}".format(acc_sum/n))
+    print("the stratified-KFold-CV UAR(recall) is {}".format(UAR_sum/n))
+
+    plt.scatter(X,Y)
+    data = [ df.loc[df['label'] == i, "gop-avg" ].to_numpy() for i in [1,2,3,4,5]]
+    plt.boxplot(data, 0, 'rs', 0, labels = ["1","2","3","4","5"])
+    plt.savefig("./data.likeutt.png")
 
 def evaluate_model(data_y, y_pred):
-    print("Accuracy: "+str(metrics.accuracy_score(data_y, y_pred))+", Recall(UAR): "+str(metrics.recall_score(data_y, y_pred, average='macro')))
+    acc = metrics.accuracy_score(data_y, y_pred)
+    UAR = metrics.recall_score(data_y, y_pred, average='macro')
+    print("Accuracy: "+str(acc)+", Recall(UAR): "+str(UAR))
     c = metrics.confusion_matrix(data_y, y_pred)
     print(c)
-    return c
+    return (acc,UAR)
     
 
 
@@ -163,9 +218,13 @@ if __name__ == "__main__":
 
     score_table = read_anno(sys.argv[2])
     data_list = readGOP(sys.argv[1], score_table)
-
     df = pd.DataFrame(data_list, columns=('uttid','gop-avg','label'))
-    pdb.set_trace()
+
+    #utt_score_list = read_gop_utt(sys.argv[1], score_table)
+    #utt_df = pd.DataFrame(utt_score_list, columns=('uttid','gop-avg','label'))
+    #pdb.set_trace()
     #get_corr_linear_cv(df)
     #get_corr_dt_cv(df)
-    get_corr_dt_cat_cv(df)
+    #get_corr_dt_cat_cv(df)
+    #get_corr_dt_cat_cv(utt_df)
+    get_corr_no_skill(df)

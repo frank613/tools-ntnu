@@ -6,3 +6,6 @@ python entropy_GMM_mono_frame_likeratio.py "ark,t:/localhome/stipendiater/xinwei
 python entropy_DNN_tri_likratio.py "ark,t:/localhome/stipendiater/xinweic/kaldi/egs/cmu_cslu_kids/s5/exp/gop_nnet2_likeRatio_tri/ali.all.txt" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/nnet3_gop_tri_converted /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/tri_all_data/ /localhome/stipendiater/xinweic/kaldi/egs/cmu_cslu_kids/s5/data/data_cmu_gop/test output/cmu.DNN-tri.json
 
 python entropy_DNN_mono_likratio.py "ark,t:/localhome/stipendiater/xinweic/kaldi/egs/cmu_cslu_kids/s5/exp/align_gop_mono_for_nnet/ali.all.txt" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/nnet3_gop_mono_converted /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/mono_all_data/ /localhome/stipendiater/xinweic/kaldi/egs/cmu_cslu_kids/s5/data/data_cmu_gop/test  output/cmu.DNN-mono.json
+
+
+python entropy_GMM_mono_frame_likeratio.py "ark,t:/home/stipendiater/xinweic/shared/wav2vec2/ali.libri.dev_clean.txt" /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/mono_all_data_30/ /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/mono_all_data_30/phones.txt /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/dev_clean/ ./out_w2v/gmm-frane-devclean.json

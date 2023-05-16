@@ -42,7 +42,7 @@ def writes(gop_list, key_list, outFile):
     with open(outFile, 'w') as fw:
         for key, gop in zip(key_list, gop_list):
             fw.write(key+'\n')
-            for cnt, (p,score) in enumerate(gop):
+            for cnt, (p,score, n, d) in enumerate(gop):
                 fw.write("%d %s %.3f\n"%(cnt, p, score))
             fw.write("\n")
    
@@ -112,14 +112,17 @@ if __name__ == "__main__":
             #step 1 segmentation of phonemes
             p_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
             segmented = []
-            temp,idx_start = 'START', 0
+            temp,idx_start = '', 0
             for i,ph in enumerate(p_seq):
                 if temp != ph:
+                    if len(segmented) == 0: 
+                        temp = ph
+                        idx_start = i
+                        continue
                     segmented.append((temp, idx_start, i))
                     temp = ph
                     idx_start = i
             segmented.append((temp, idx_start, i+1))
-            segmented = segmented[1:]
             input_values = processor(row["speech"], return_tensors="pt").input_values   
             #step 2 get the transoformed and closest vector of the output for each frame, disable time mask using model.eval(), no padding
             results = model(input_values) 
