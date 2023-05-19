@@ -2,3 +2,8 @@
 /compare_gop/out*
 *.txt
 /replace-dict-analysis/*
+*.png
+*.DS_Store
+*.gop
+*.symbol
+*.lattice
