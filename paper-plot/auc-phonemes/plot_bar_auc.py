@@ -19,12 +19,17 @@ def plot(target_dict, ref_dict_list, target_dname, ref_dname, out_file):
     del target_dict["phonemes"]["SIL"]
     del target_dict["phonemes"]["SPN"]
     assert(len(target_dict["phonemes"]) == len(ref_dict_list[0]["phonemes"]))
-    phoneme_list = target_dict["phonemes"].keys()
+    targets = list(target_dict["phonemes"].items())
+    pdb.set_trace()
+    targets = sorted(targets, key=lambda x:x[1][0])
+    phoneme_list = [ k for k,v in targets ]
+
+    #sort to AUC, increasing
     target_pos = np.arange(len(phoneme_list))*1.5
     ref_pos_list = [target_pos+(i+1)*barWidth for i in range(len(ref_dict_list))]
      
     # Make the plot
-    fig, ax = plt.subplots(figsize=(20, 5))
+    fig, ax = plt.subplots(figsize=(16, 4))
     auc_target = [ target_dict["phonemes"][p][0] for p in phoneme_list] 
     ax.bar(target_pos, auc_target, width = barWidth, color = colors[0],
             edgecolor ='grey', label = target_dname)
@@ -40,7 +45,7 @@ def plot(target_dict, ref_dict_list, target_dname, ref_dname, out_file):
     #plt.gca().get_yaxis().set_visible(False)
     ax.set_ylim([0.5,1])
     ax.set_xlim(left=-0.3, right=ref_pos_list[-1][-1]+1)
-    plt.legend(fontsize=12, loc=3, framealpha=1.0)
+    plt.legend(fontsize=12, loc=4, framealpha=1.0)
     plt.tight_layout()
     #plt.title('AUC compare over different phoenmes')
     os.makedirs(os.path.dirname(out_file), exist_ok=True)

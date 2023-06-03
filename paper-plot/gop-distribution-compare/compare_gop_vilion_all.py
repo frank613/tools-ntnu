@@ -40,7 +40,7 @@ def readGOPToDF(df, gop_file, label):
 def plot(df, data_labels):
     label = df['label'].unique()
     all_phonemes = df['phoneme'].unique()
-    fig, ax = plt.subplots(1, figsize=(8,6))
+    fig, ax = plt.subplots(1, figsize=(6,4))
     data = [ df.loc[(df["phoneme"] != "SIL") & (df["phoneme"] != "SPN")  & (df["label"] == lb), 'score'].to_numpy() for lb in label]
     plot_labels=[]
     for row,lb,pos in zip(data,label,range(len(label))):
@@ -48,9 +48,10 @@ def plot(df, data_labels):
     #ax.set_title('Gop distribution for different data sets using DNN')
     ax.get_yaxis().set_visible(False)
     ax.set_xlim([-20, 0.1])
+    ax.set_xlabel("GOP value")
     plot_labels.reverse()
     ax.legend(*zip(*plot_labels), loc=3, fontsize=12, framealpha=1.0)
-    outFile = "./out-compare-dnn-vilion/all-tri-DNN.png"
+    outFile = "./out-compare-dnn-vilion/all-tri-DNN.pdf"
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
     plt.tight_layout()
     plt.savefig(outFile)

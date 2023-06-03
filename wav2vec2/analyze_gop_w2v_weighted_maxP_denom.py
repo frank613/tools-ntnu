@@ -71,56 +71,55 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
         #negative because GOP is negatively correlated to the probablity of making an error
         return round(metrics.roc_auc_score(labels, -array[:, 0]),3)
  
-def writes(gops_maps, outFile):
-    for key,gops_map in gops_maps.items():
-        out_form = { \
-                    'phonemes':{},
-                    'summary': {"average-mean-diff": None, "average-AUC": None, "total_real": None, "total_error":None}}
-        total_real = 0
-        total_error = 0
-        total_auc = 0
-        total_mean_diff = 0
-        for (k,v) in gops_map.items():
-            real_arr = np.array(gops_map[k][k])
-            if len(real_arr) == 0:
+def writes(gops_map, outFile):
+    out_form = { \
+                'phonemes':{},
+                'summary': {"average-mean-diff": None, "average-AUC": None, "total_real": None, "total_error":None}}
+    total_real = 0
+    total_error = 0
+    total_auc = 0
+    total_mean_diff = 0
+    for (k,v) in gops_map.items():
+        real_arr = np.array(gops_map[k][k])
+        if len(real_arr) == 0:
+            continue
+        ent,nbin = compute_entropy(real_arr)
+        real_label = np.stack((real_arr, np.full(len(real_arr), 0)), 1)
+        scores = []
+        total_real += len(real_arr)
+        for p in set(gops_map[k].keys()) - set([k]):
+            sub_arr = np.array(gops_map[p][k]) #for all the p phonemes that are substituted to k
+            if len(sub_arr) == 0:
                 continue
-            ent,nbin = compute_entropy(real_arr)
-            real_label = np.stack((real_arr, np.full(len(real_arr), 0)), 1)
-            scores = []
-            total_real += len(real_arr)
-            for p in set(gops_map[k].keys()) - set([k]):
-                sub_arr = np.array(gops_map[p][k]) #for all the p phonemes that are substituted to k
-                if len(sub_arr) == 0:
-                    continue
-                sub_label = np.stack((sub_arr, np.full(len(sub_arr), 1)), 1)
-                auc_value = auc_cal(np.concatenate((real_label, sub_label)))
-                scores.append((p, sub_arr.mean(), len(sub_arr), round(auc_value,3)))
-                total_error += len(sub_arr)
+            sub_label = np.stack((sub_arr, np.full(len(sub_arr), 1)), 1)
+            auc_value = auc_cal(np.concatenate((real_label, sub_label)))
+            scores.append((p, sub_arr.mean(), len(sub_arr), round(auc_value,3)))
+            total_error += len(sub_arr)
 
-            if len(scores) == 0:
-                continue
-            confused_p, p_mean, num_error, auc = sorted(scores, key = lambda x: x[3])[0]
-            mean_diff = round(real_arr.mean() - p_mean, 3)
-            out_form["phonemes"][k] = (confused_p, np.float64(mean_diff), auc, ent, len(real_arr), num_error)
-            total_auc += auc
-            total_mean_diff += mean_diff
-        out_form["summary"]["average-mean-diff"]=total_mean_diff/len(gops_map.items())
-        out_form["summary"]["average-AUC"]=total_auc/len(gops_map.items())
-        out_form["summary"]["total_real"]=total_real
-        out_form["summary"]["total_error"]=total_error
+        if len(scores) == 0:
+            continue
+        confused_p, p_mean, num_error, auc = sorted(scores, key = lambda x: x[3])[0]
+        mean_diff = round(real_arr.mean() - p_mean, 3)
+        out_form["phonemes"][k] = (confused_p, np.float64(mean_diff), auc, ent, len(real_arr), num_error)
+        total_auc += auc
+        total_mean_diff += mean_diff
+    out_form["summary"]["average-mean-diff"]=total_mean_diff/len(gops_map.items())
+    out_form["summary"]["average-AUC"]=total_auc/len(gops_map.items())
+    out_form["summary"]["total_real"]=total_real
+    out_form["summary"]["total_error"]=total_error
 
-        os.makedirs(os.path.dirname(outFile), exist_ok=True)
-        with open(outFile+'.'+str(key), "w") as f:
-            json.dump(out_form, f)
+    os.makedirs(os.path.dirname(outFile), exist_ok=True)
+    with open(outFile, "w") as f:
+        json.dump(out_form, f)
 
    
-def compute_cos_compact(X, Y, dim=-1): 
+def compute_cos_compact(X, Y): 
     #X.shape = (seq_len,256) Y.shape = (320,320,256) return shape = (seq_len,320,320)
     split_n = 10
     res = torch.Tensor()
     t_list = []
     for batch in X.split(split_n): #shape(batch) = (split_n, 256)
-        t_list.append(torch.cosine_similarity(batch.view(-1,1,1,768), Y, -1)) #(320,320)
+        t_list.append(torch.cosine_similarity(batch.view(-1,1,1,256), Y, -1)) #(320,320)
     res = torch.cat(t_list, 0)
     return res        
  
@@ -172,14 +171,9 @@ if __name__ == "__main__":
 
         #Analyze for each target phoneme, investigate the GOP of all the other phonemes that are evaluated with the target phoneme model.
         #Plot the mean for all the other model and compute the overall AUC for that phoneme
-        threshold = [0,0.01,0.05,0.1]
-        gops_map = { th:{ p1:{ p2: [] for p2 in p_set } for p1 in p_set } for th in threshold }  # map(p:map(p:average)
+        gops_map = { p1:{ p2: [] for p2 in p_set } for p1 in p_set }  # map(p:map(p:average)
         #starting processing
-        cnt=0
         for row in dataset:
-            #if cnt >=1:
-            #    break
-            cnt+=1
             print("processing {}".format(row["id"]))
             if row["id"] not in uttid_list:
                 print("not found in the alignment, skipped")
@@ -205,17 +199,16 @@ if __name__ == "__main__":
             sim_denom = torch.cosine_similarity(projected_vector, closest_vector) #shape= (seq_len)
             #step 4 (numerator)calculate the similarity compared to the transformed codebook centriods for each frame given the prior
             similarity_num = compute_cos_compact(projected_vector.float(), projected_cws.float(), dim=-1) #shape = (seq_len,320,320)
-            for th in threshold:
-                for p in p_set: 
+            for phoneme,start_idx,end_idx in segmented:
+                if phoneme == "SIL" or phoneme == "SPN":
+                        continue
+                sim_dict = {}
+                for p in p_set:
                     weight_tensor = torch.Tensor(prior[p]) #shape = (320,320)
-                    weight_tensor = torch.where(weight_tensor >= th, 1, 0)
-                    best, _ = sim_num = (weight_tensor * similarity_num).max(-1)
-                    best, _ = best.max(-1)
-                    #step 5 gop calculation
-                    sim_diff = best - sim_denom #shape= (seq_len)
-                    for phoneme,start_idx,end_idx in segmented:
-                        if phoneme == "SIL" or phoneme == "SPN":
-                            continue
-                        gops_map[th][phoneme][p].append(sim_diff[start_idx:end_idx].mean())
+                    sim_dict.update({p:(similarity_num[start_idx:end_idx] * prior[p]).sum(dim=(1,2)).mean()})
+                best_p = max(sim_dict.values())
+                for p in p_set:
+                    sim_diff = sim_dict[p] - best_p #shape= (seq_len)
+                    gops_map[phoneme][p].append(sim_diff)
     #dump the distribution
     writes(gops_map, sys.argv[4])
