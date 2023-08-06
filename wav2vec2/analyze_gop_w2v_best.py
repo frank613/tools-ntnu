@@ -159,14 +159,14 @@ if __name__ == "__main__":
             sys.exit("the codebook must have exactly two groups of codes, otherwise not implemented")
         num_vars = model.quantizer.num_vars
         idx_pairs = torch.cartesian_prod(torch.arange(num_vars), torch.arange(num_vars))
-        c_view = codewords.view(1,num_groups, num_vars, -1) #shape = (1,2,360,128)
-        concat_list = [] #shape =(1,360^2,256)
+        c_view = codewords.view(1,num_groups, num_vars, -1) #shape = (1,2,320,128)
+        concat_list = [] #shape =(1,320^2,256)
         for idx_pair in idx_pairs:
             concat_code = torch.Tensor()
             for i,idx in zip(range(num_groups), idx_pair):
                 concat_code = torch.cat((concat_code, c_view[0][i][idx]), 0) #shape = (256)
             concat_list.append(concat_code)
-        concat_tensor = torch.stack(concat_list,0) #shape =(360^2,256)
+        concat_tensor = torch.stack(concat_list,0) #shape =(320^2,256)
         projected_cws = model.project_q(concat_tensor).view(num_vars, num_vars, -1) #shape=(320,320,256)
         uttid_list = ali_df['uttid'].unique()
 

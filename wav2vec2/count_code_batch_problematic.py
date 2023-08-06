@@ -74,14 +74,13 @@ if __name__ == "__main__":
     def process_batch(batch):
         with torch.no_grad():
             print("process one batch")
-            input_values = processor(batch["speech"], return_tensors="pt", padding=False, sampling_rate=16000).input_values
+            input_values = processor(batch["speech"], return_tensors="pt", padding=True, sampling_rate=16000).input_values
             ##get the CNN output
-            #cnn_hiddens =  model.wav2vec2.feature_extractor(input_values)
-            #cnn_hiddens = cnn_hiddens.transpose(1,2)
-            model_results = model.wav2vec2(input_values)
-            cnn_hiddens = model.dropout_features(model_results[1])
+            cnn_hiddens =  model.wav2vec2.feature_extractor(input_values)
+            cnn_hiddens = cnn_hiddens.transpose(1,2)
             ##get the mapped logits
             logits = model.quantizer.weight_proj(cnn_hiddens)
+            pdb.set_trace()
             max_logit, max_index = logits.view(logits.shape[0],logits.shape[1], 2, 320).max(dim=-1)
             indicies = max_index.flatten(start_dim=0, end_dim=1) #shape = (N,2)
             indicies_list = indicies.permute((1,0)) #shape = (2,N) or two list of indicies for group A and group B
@@ -106,7 +105,7 @@ if __name__ == "__main__":
 
     
 
-    ds_filtered = ds_filtered.map(process_batch, batched=True, batch_size=1)
+    ds_filtered = ds_filtered.map(process_batch, batched=True, batch_size=20)
     
     #dump the distribution
     pdb.set_trace()

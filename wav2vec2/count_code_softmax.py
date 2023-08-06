@@ -67,10 +67,10 @@ if __name__ == "__main__":
         return batch
 
     print("pre-processing")
-    dataset = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=500)
+    dataset = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
     ds_filtered = dataset.filter(lambda example: example['p_text'] is not None)
 
-    ##step 2 process the data in batch
+    #step 2 process the data in batch
     def process_batch(batch):
         with torch.no_grad():
             print("process one batch")
@@ -82,12 +82,10 @@ if __name__ == "__main__":
             cnn_hiddens = model.dropout_features(model_results[1])
             ##get the mapped logits
             logits = model.quantizer.weight_proj(cnn_hiddens)
-            max_logit, max_index = logits.view(logits.shape[0],logits.shape[1], 2, 320).max(dim=-1)
-            indicies = max_index.flatten(start_dim=0, end_dim=1) #shape = (N,2)
-            indicies_list = indicies.permute((1,0)) #shape = (2,N) or two list of indicies for group A and group B
-            indicies_list = torch.cat((torch.arange(indicies.shape[0]).unsqueeze(0),indicies_list),0)
-            one_hot = torch.zeros(indicies.shape[0], 320, 320)
-            one_hot[indicies_list[0], indicies_list[1], indicies_list[2]] = 1 #shape = (N, 320, 320)
+            softmax_mat = logits.view(-1, 2, 320).softmax(dim=-1) #(N,2,320)
+            soft1 = softmax_mat[:, 0, :].unsqueeze(2).expand(-1, -1, 320)
+            soft2 = softmax_mat[:, 1, :].unsqueeze(1).expand(-1, 320, -1)
+            softmax_mat = soft1 * soft2 #shape = (N, 320, 320)
             ##not woking by directly call the tokenizer, word delimeter will be inserted
             #list_tokens = [ ' '.join(seq) for seq in batch["p_text"]] 
             #padded_idx = torch.Tensor(p_tokenizer(list_tokens, padding="longest", is_split_into_words=True)["input_ids"]) ##the code of <pad> is zero, see <vocab.json>, shape = (N,)
@@ -100,9 +98,7 @@ if __name__ == "__main__":
             padded_idx = torch.Tensor(p_tokenizer.pad(dict_of_idxlist)["input_ids"])   #shape = (N, 860)
             ##phoneme lables
             ## put the phoneme identity in the one_hot_idx for scatter add (all other code points as well as padded points will be added to the phoenme "zero" group)
-            one_hot_idx = one_hot * (padded_idx.view(-1,1,1).expand(-1,320,320))
-            results.scatter_add_(0, one_hot_idx.type(torch.int64), one_hot)
-            ## It's more easy to understand to use results.scatter_add_(0, padded_idx.view(-1,1,1).expand(-1,320,320), one_hot)
+            results.scatter_add_(0, padded_idx.view(-1,1,1).expand(-1,320,320).type(torch.int64), softmax_mat)
 
     
 

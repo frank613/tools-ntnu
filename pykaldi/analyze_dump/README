@@ -9,3 +9,5 @@ python entropy_DNN_mono_likratio.py "ark,t:/localhome/stipendiater/xinweic/kaldi
 
 
 python entropy_GMM_mono_frame_likeratio.py "ark,t:/home/stipendiater/xinweic/shared/wav2vec2/ali.libri.dev_clean.txt" /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/mono_all_data_30/ /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/mono_all_data_30/phones.txt /home/stipendiater/xinweic/shared/libri-models-data-forw2v2/dev_clean/ ./out_w2v/gmm-frane-devclean.json
+
+python entropy_DNN_mono_average_posterior.py "ark,t:/localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/align_valid_normal/ali.all.txt" /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/nnet3_gop_mono_converted /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/exp/mono_all_data/ /localhome/stipendiater/xinweic/kaldi/egs/librispeech/s5/data/dev_clean/ ./out_w2v/dnn-average-post-libri-dev.json
