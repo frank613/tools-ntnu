@@ -80,7 +80,7 @@ def load_dataset_local_from_dict(folder_path):
 
     return ds_filtered
 
- ##modified from Stanford-CTC, return the rescaled alphas and betas
+ ##modified from Stanford-CTC, return the alphas and betas
 def ctc_loss(params, seq, blank=0):
     """
     CTC loss function.
@@ -118,7 +118,7 @@ def ctc_loss(params, seq, blank=0):
                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                     * params[seq[l],t]
 	    
-    llForward = alphas[L-1, T-1] + alphas[L-2, T-1]
+    llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
 
     # Initialize betas and backwards pass
     betas[-1,-1] = params[blank,-1]
@@ -149,7 +149,6 @@ def ctc_loss(params, seq, blank=0):
     if llDiff > 1e-5 :
         print("Diff in forward/backward LL : %f"%llDiff)
 	
-    pdb.set_trace()
     return -llForward,alphas,betas
 
  
@@ -200,7 +199,8 @@ if __name__ == "__main__":
             logits = return_dict["logits"].squeeze(0) 
             post_mat = logits.softmax(dim=-1)
             ll_self, alphas, betas = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-            if log_like_total != ll_self:
+            llDiff = np.abs(log_like_total - ll_self)
+            if llDiff > 1 :
                 print(f"model ll: {log_like_total}, function ll: {ll_self}")
 
             
