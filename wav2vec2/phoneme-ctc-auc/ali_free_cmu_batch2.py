@@ -284,17 +284,17 @@ def compute_gop_af(post_mat, labels, ll_self, alphas, betas, order):
 def compute_gop_af_batch(post_mat, ll_self, batch_label, alphas, betas):
     
     L = batch_label.shape[1]
-    P = batch_label.shape[0]/L
+    P = int(batch_label.shape[0]/L)
     T = alphas.shape[2]
     denom_sum = torch.zeros_like(ll_self)
-    #for the first P samples, phoneme_number=1
+    #for the first P samples, phoneme_number=0
     p_r = batch_label[:P,0+1]
     s2 = 2*1-1 + 1 + 1
     for t2 in range(1,T): 
         index_list = torch.stack((torch.ones(P)*(t2-1), p_r),0).tolist()
         denom_sum[:P] += (1-post_mat[index_list]) * betas[:P, s2, t2]
 
-    #for the last P samples, phoneme_number=L-
+    #for the last P samples, phoneme_number=L-1
     p_l = batch_label[-P:,L-1-1]
     s1 = 2*L-1 -1 - 1
     for t1 in range(T-1):
@@ -305,14 +305,14 @@ def compute_gop_af_batch(post_mat, ll_self, batch_label, alphas, betas):
     #t2 >= t1 + 3
     #p_l,p_m,p_r = list(zip(pids_shiftdown, pids, pids_shiftup))[order]  
     #list of GOP target phoneme number
-    phoneme_number_seq = torch.arange(2,L).repeat(P,1).transpose(0,1).flatten()
+    phoneme_number_seq = torch.arange(1,L-1).repeat(P,1).transpose(0,1).flatten()
     start_s = 2*(phoneme_number_seq)-1-1
     end_s = 2*(phoneme_number_seq)-1+1   #2i-1 is the middle phoneme index 
     s1_batch = start_s - 1
     s2_batch = end_s + 1
     
-    p_r = batch_label[torch.stack((torch.arange(len(phoneme_number_seq)), phoneme_number_seq+1), 0)]
-    p_l = batch_label[torch.stack((torch.arange(len(phoneme_number_seq)), phoneme_number_seq-1), 0)]
+    p_r = batch_label[torch.stack((torch.arange(len(phoneme_number_seq)), phoneme_number_seq+1), 0).tolist()]
+    p_l = batch_label[torch.stack((torch.arange(len(phoneme_number_seq)), phoneme_number_seq-1), 0).tolist()]
     for t1 in range(T-3): 
         for t2 in range(t1+3,T):
             index_list_r = torch.stack((torch.ones(len(phoneme_number_seq))*(t2-1), p_r),0).tolist()
@@ -345,8 +345,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    #ds_filtered = ds_map
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
 
 
     return ds_filtered
@@ -405,12 +405,15 @@ if __name__ == "__main__":
             for order, pid in enumerate(labels):
                 if pid in pid_set:
                     batch_label[order,:,order] = torch.Tensor(pid_set)
-                    ll_self, alphas, betas = ctc_loss_batch(post_mat.transpose(0,1), batch_label.view(-1,label_length), blank=0)  
-                    #step 3.1
-                    gop_scores = compute_gop_af_batch(post_mat, ll_self, batch_label, alphas, betas)
-                    for gop,pid_inner in zip(gop_scores,pid_set):
-                        gops_map[int(pid)][pid_inner].append(gop)   
-                   
+            pdb.set_trace()
+            ll_self, alphas, betas = ctc_loss_batch(post_mat.transpose(0,1), batch_label.view(-1,label_length), blank=0)  
+            #step 3.1
+            gop_scores = compute_gop_af_batch(post_mat, ll_self, batch_label.view(-1,label_length), alphas, betas)
+            pid_seq = labels.repeat(len(pid_set),1).transpose(0,1).flatten()
+            pdb.set_trace()
+            for pid,gop,pid_inner in zip(pid_seq,gop_scores,list(pid_set)*label_length):
+                gops_map[int(pid)][pid_inner].append(gop)   
+            
                 
     print("done with GOP computation")
     write(gops_map, p_tokenizer, sys.argv[4])
