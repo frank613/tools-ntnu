@@ -75,8 +75,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    ds_filtered = ds_map
+    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    #ds_filtered = ds_map
 
     return ds_filtered
 
@@ -239,7 +239,7 @@ if __name__ == "__main__":
                         for t2 in range(t1+3,T):
                             denom_sum += alphas[s1,t1]*(1-post_mat[t1+1,p_l]) * (1-post_mat[t2-1, p_r]) * betas[s2,t2]
                 
-                gop = -ll_self + np.log(denom_sum)
+                gop = -ll_self - np.log(denom_sum)
                 gop_list.append((p_tokenizer._convert_id_to_token(p_m), gop))
             gops_list.append((row['id'], gop_list))
  
