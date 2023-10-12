@@ -1,0 +1,8 @@
+python average_posterior_cmu_real.py ./ali.cmu.phoneme.txt ./models/wav2vec2_phoneme_ce/ ./data/local/cmu/train/ ./label_mapped.txt ./error_uttid.txt./out_cmu.json
+
+python gop_avg_posterior.py ./ali.teflon.phoneme.txt ./models/wav2vec2_phoneme_ce/ ./data/local/teflon/ ./out_teflon.gop
+
+python ali_free_cmu_gv2.py ./cmu.all.ctm ./models/ctc-en/ ./data/local/cmu/train/ ./out_cmu_giamp_v2.json
+
+
+#filtered cmu
