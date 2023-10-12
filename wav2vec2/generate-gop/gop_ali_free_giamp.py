@@ -16,8 +16,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
-#spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil"])
+spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+sil_tokens = set(["sil", "SIL", "SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -44,9 +44,9 @@ def read_trans(trans_path):
             if items[0] != cur_uttid and items[0] not in trans_map: 
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
-                
-            if items[4] not in sil_tokens:
-                trans_map[cur_uttid].append(re_phone.match(items[4]).group(1))
+            phoneme = re_phone.match(items[4]).group(1)                
+            if phoneme not in (sil_tokens | spec_tokens):
+                trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
 
@@ -196,8 +196,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <out-file>.\n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
@@ -205,9 +205,10 @@ if __name__ == "__main__":
     # load the pretrained model and data
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
+    prep_path = sys.argv[4]
  
-    processor = Wav2Vec2Processor.from_pretrained("fixed-data-nor/processor-ctc")
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data-nor/processor-ctc")
+    processor = Wav2Vec2Processor.from_pretrained(prep_path)
+    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
 
@@ -255,7 +256,7 @@ if __name__ == "__main__":
        
 
     print("done with GOP computation")
-    writes(gops_list, sys.argv[4])
+    writes(gops_list, sys.argv[5])
 
 
 

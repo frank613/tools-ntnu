@@ -12,17 +12,12 @@ import torch
 from pathlib import Path
 import pdb
 
-
-
-
-
 datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil","SIL","SPN"])
-
+sil_tokens = set(["sil", "SIL", "SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -49,8 +44,8 @@ def read_trans(trans_path):
             if items[0] != cur_uttid and items[0] not in trans_map: 
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
-            phoneme = re_phone.match(items[4]).group(1)
-            if phoneme  not in (sil_tokens |spec_tokens):
+            phoneme = re_phone.match(items[4]).group(1)                
+            if phoneme not in (sil_tokens | spec_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
@@ -81,7 +76,7 @@ def load_dataset_local_from_dict(folder_path):
 
     return ds_filtered
 
- ##modified from Stanford-CTC, return the alphas and betas
+##return only likeli
 def ctc_loss(params, seq, blank=0):
     """
     CTC loss function.
@@ -95,7 +90,6 @@ def ctc_loss(params, seq, blank=0):
     T = params.shape[1] # Length of utterance (time)
 
     alphas = torch.zeros((L,T)).double()
-    betas = torch.zeros((L,T)).double()
 
     # Initialize alphas and forward pass 
     alphas[0,0] = params[blank,0]
@@ -120,45 +114,93 @@ def ctc_loss(params, seq, blank=0):
                     * params[seq[l],t]
 	    
     llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
+	
+    return -llForward
 
-    # Initialize betas and backwards pass
-    betas[-1,-1] = params[blank,-1]
-    betas[-2,-1] = params[seq[-1],-1]
-    c = betas[:,-1].sum()
-    betas[:,-1] = betas[:,-1]
-    for t in range(T-2,-1,-1):
+##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
+##zero pos must "-1" because we already remove the blank token in the last dimension
+def check_arbitrary(in_alphas, s, t, zero_pos=None):
+    if torch.count_nonzero(in_alphas[s,t]) > 1:
+        if zero_pos:
+            mask = torch.ones_like(in_alphas[s,t])
+            mask[zero_pos] = 0
+            return sum(in_alphas[s,t][mask.bool()])
+        else:
+            return sum(in_alphas[s,t][:])
+    else:
+        return False
+    
+##return only likeli, given the postion for arbitrary state
+def ctc_loss_denom(params, seq, pos, blank=0):
+    """
+    CTC loss function.
+    params - n x m matrix of n-D probability distributions(softmax output) over m frames.
+    seq - sequence of phone id's for given example.
+    Returns objective, alphas and betas.
+    """
+    seqLen = seq.shape[0] # Length of label sequence (# phones)
+    numphones = params.shape[0] # Number of labels
+    L = 2*seqLen + 1 # Length of label sequence with blanks
+    T = params.shape[1] # Length of utterance (time)
+    P = params.shape[0] - 1 # number of non-blank tokens    
+
+    ##extend the tensor to save "arbitrary state"
+    alphas = torch.zeros((L,T,P)).double()
+
+    # Initialize alphas and forward pass 
+    alphas[0,0,0] = params[blank,0]
+    if pos == 0:
+        alphas[1,0] = params[1:,0]  #an list of non-blank 
+    else:
+        alphas[1,0,0] = params[seq[0],0]
+
+    for t in range(1,T):
         start = max(0,L-2*(T-t)) 
-        end = min(2*t+2,L)
-        for s in range(end-1,-1,-1):
+        ##end = min(2*t+2,L)
+        for s in range(start,L):
             l = int((s-1)/2)
             # blank
             if s%2 == 0:
-                if s == L-1:
-                    betas[s,t] = betas[s,t+1] * params[blank,t]
+                if s==0:
+                    alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
-                    betas[s,t] = (betas[s,t+1] + betas[s+1,t+1]) * params[blank,t]
-            # same label twice
-            elif s == L-2 or seq[l] == seq[l+1]:
-                betas[s,t] = (betas[s,t+1] + betas[s+1,t+1]) * params[seq[l],t]
-            else:
-                betas[s,t] = (betas[s,t+1] + betas[s+1,t+1] + betas[s+2,t+1]) \
-                    * params[seq[l],t]
+                    sum = check_arbitrary(alphas, s-1, t-1)
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
+                        alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]  
+                    else:
+                        alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
+            elif pos != l and pos != l-1:
+                if s == 1 or seq[l] == seq[l-1]:   # the first label or same label twice
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[seq[l],t]
+                else:
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
+                        * params[seq[l],t]
+            elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension
+                sum = check_arbitrary(alphas, s-2, t-1, seq[l]-1)  ##remove the entry of the "l"th token in the last dim, because it's not allowed for a direct transfer for dublicated label
+                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum) * params[seq[l],t]
+            else: #current pos can be non-blank arbitrary tokens, keep the same token if already in the state of t-1
+                if s == 1:
+                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t]
+                else:
+                    skip_prob = alphas[s-2,t-1,0] * params[1:,t]  
+                    skip_prob[seq[l] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
+                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t] + skip_prob
+         
 
-    llBackward = torch.log(betas[0, 0] + betas[1, 0])
-    # Check for underflow or zeros in denominator of gradient
-    llDiff = np.abs(llForward-llBackward)
-    if llDiff > 1e-5 :
-        print("Diff in forward/backward LL : %f"%llDiff)
+
+    sum = check_arbitrary(alphas, L-2, T-1)    
+    if sum: # last label is arbitrary
+        llForward = torch.log(sum + alphas[L-1, T-1, 0])
+    else:
+        llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
 	
-    return -llForward,alphas,betas
-
- 
+    return -llForward
     
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <out-file>.\n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
@@ -166,9 +208,10 @@ if __name__ == "__main__":
     # load the pretrained model and data
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
+    prep_path = sys.argv[4]
  
-    processor = Wav2Vec2Processor.from_pretrained("fixed-data-nor/processor-ctc")
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data-nor/processor-ctc")
+    processor = Wav2Vec2Processor.from_pretrained(prep_path)
+    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
 
@@ -197,51 +240,26 @@ if __name__ == "__main__":
             ##return the log_like to check the correctness of our function
             return_dict = model(input_values, labels = labels)
             log_like_total = return_dict["loss"].squeeze(0)
-            pdb.set_trace()
             logits = return_dict["logits"].squeeze(0) 
             post_mat = logits.softmax(dim=-1)
-            ll_self, alphas, betas = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+            ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
             if llDiff > 1 :
                 print(f"model ll: {log_like_total}, function ll: {ll_self}")
 
-            
-            T = alphas.shape[1]
+            #step 2, compute the GOP
             pids = labels.tolist()
-            pids_shiftdown = [None] + pids[:-1]
-            pids_shiftup = pids[1:] + [None]  
             gop_list = []
-            #[alpha_t1(s1) * (1-y(t1+1,P1)] * [(1 - y(t2-1,P2))*beta_t2(s2)]
-            #t2 >= t1 + 3
-            phoneme_number = 0
-            for (p_l,p_m,p_r) in zip(pids_shiftdown, pids, pids_shiftup):
-                denom_sum = 0
-                phoneme_number += 1 #start from 1
-                start_s, end_s = 2*phoneme_number-1-1, 2*phoneme_number-1+1  #2i-1 is the middle phoneme index
-                if phoneme_number == 1:
-                    s2 = end_s + 1
-                    for t2 in range(1,T): 
-                        denom_sum += (1-post_mat[t2-1, p_r]) * betas[s2, t2]
-                elif phoneme_number == len(labels):
-                    s1 = start_s - 1
-                    for t1 in range(T-1):
-                       denom_sum += alphas[s1,t1]*(1-post_mat[t1+1,p_l]) 
-                else:
-                    s1 = start_s - 1 
-                    s2 = end_s + 1
-                    ## for all the possible alignments of the current phoneme constraint by other canonical phonemes in the sequence
-                    for t1 in range(T-3): 
-                        for t2 in range(t1+3,T):
-                            denom_sum += alphas[s1,t1]*(1-post_mat[t1+1,p_l]) * (1-post_mat[t2-1, p_r]) * betas[s2,t2]
-                
-                gop = -ll_self - np.log(denom_sum)
-                gop_list.append((p_tokenizer._convert_id_to_token(p_m), gop))
+            for i,pid in enumerate(pids):
+                ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+                gop = -ll_self + ll_denom
+                gop_list.append((p_tokenizer._convert_id_to_token(pid), gop))
             gops_list.append((row['id'], gop_list))
  
        
 
     print("done with GOP computation")
-    writes(gops_list, sys.argv[4])
+    writes(gops_list, sys.argv[5])
 
 
 

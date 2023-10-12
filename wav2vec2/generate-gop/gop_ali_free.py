@@ -20,8 +20,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
-#spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil"])
+spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+sil_tokens = set(["sil", "SIL", "SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -48,9 +48,9 @@ def read_trans(trans_path):
             if items[0] != cur_uttid and items[0] not in trans_map: 
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
-                
-            if items[4] not in sil_tokens:
-                trans_map[cur_uttid].append(re_phone.match(items[4]).group(1))
+            phoneme = re_phone.match(items[4]).group(1)
+            if phoneme  not in (sil_tokens |spec_tokens):
+                trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
 
@@ -75,8 +75,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    #ds_filtered = ds_map
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
 
     return ds_filtered
 
@@ -209,6 +209,7 @@ if __name__ == "__main__":
             post_mat = logits.softmax(dim=-1)
             ll_self, alphas, betas = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
+            pdb.set_trace()
             if llDiff > 1 :
                 print(f"model ll: {log_like_total}, function ll: {ll_self}")
 

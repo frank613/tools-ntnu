@@ -22,17 +22,6 @@ spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
-
-
-def writes(gops_list, outFile):
-    os.makedirs(os.path.dirname(outFile), exist_ok=True)
-    with open(outFile, 'w') as fw:
-        for key, gop_list in gops_list:
-            fw.write(key+'\n')
-            for cnt, (p,score) in enumerate(gop_list):
-                fw.write("%d %s %.3f\n"%(cnt, p, score))
-            fw.write("\n")
-  
     
 def read_trans(trans_path):
     trans_map = {}
@@ -51,12 +40,14 @@ def read_trans(trans_path):
     return trans_map 
 
 
-def load_dataset_local_from_dict(folder_path):
+def load_dataset_local_from_dict(folder_path, uttid):
     datadict = {"audio": []}  
     with open(folder_path + '/metadata.csv') as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
+            uid = row.split(',')[0].split('.')[0]     
+            if uttid == uid:
+                datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
@@ -71,11 +62,10 @@ def load_dataset_local_from_dict(folder_path):
                 batch["p_text"].append(tran_map[uid])
         return batch
 
-    ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    ds_filtered = ds_map
+    ds_map = ds.map(map_to_array, remove_columns=["audio"])
 
-    return ds_filtered
+
+    return ds_map
 
 ##return only likeli
 def ctc_loss(params, seq, blank=0):
@@ -167,8 +157,8 @@ def ctc_loss_scaled(params, seq, blank=0):
 
 
     
-##return only likeli, given the postion for allowing arbitrary tokens
-def ctc_loss_denom(params, seq, pos, blank=0):
+##return likeli and the best path given the postion for allowing arbitrary tokens
+def ctc_loss_denom_best(params, seq, pos, blank=0):
     """
     CTC loss function.
     params - n x m matrix of n-D probability distributions(softmax output) over m frames.
@@ -192,7 +182,6 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     else:
         alphas[1,0] = params[seq[0],0]
 
-
     for t in range(1,T):
         start = max(0,L-2*(T-t)) 
         ##end = min(2*t+2,L)
@@ -203,16 +192,10 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 if s==0:
                     alphas[s,t] = alphas[s,t-1] * params[blank,t]
                 elif pos == l: ##leave the wildcard state with an emtpy token. 
-                    #remove the path duplicated with the "skip" path from alphas[s,t-1], t-2 is a bug when t=1?
-                    #removed1 =  alphas[s,t-1] - alphas[s-2,t-2] * params[blank,t-1]
-                    #fixing the bug?
-                    if t == 1:
-                        removed1 =  alphas[s,t-1] - alphas[s-2,t-2] * params[blank,t-1]
-                        #the wild card state must remove the "blank" path from the previous time(t-1), because it's overlapped with the first term:  alphas[s,t-1]
-                        removed2 =  alphas[s-1,t-1] - alphas[s-1,t-2] * params[blank,t-1]
-                    else: # t=1
-                        removed1 = 0
-                        removed2 = alphas[s-1,t-1] ## already removed blank at initial step
+                    #remove the path duplicated with the "skip" path from alphas[s,t-1]
+                    removed1 =  alphas[s,t-1] - alphas[s-2,t-2] * params[blank,t-1]
+                    #the wild card state must remove the "blank" path from the previous time(t-1), because it's overlapped with the first term:  alphas[s,t-1]
+                    removed2 =  alphas[s-1,t-1] - alphas[s-1,t-2] * params[blank,t-1]
                     #we also allow "skip" action: alphas[s-2,t-1] for gop to model token deletion. (This skip is allowed only once for each blank state, otherwise duplicated computation)
                     alphas[s,t] = (removed1 + removed2 + alphas[s-2,t-1]) * params[blank,t]
 
@@ -225,16 +208,13 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                         * params[seq[l],t]
             elif pos == l-1: #previous token is the arbitrary token
-                #removed = alphas[s-2,t-1]*(1 - params[blank,t-1] - params[seq[l],t-1] ) ## remove the blank token (already considered in the blank state) and the duplicated label of t-1, compare to the last equation
-                if t == 1 and s == 3: # the only possible path is from s=1(pos) -> s=3
-                    removed = alphas[s-2,t-1] - params[seq[l],t-1]
-                    alphas[s,t] =  removed * params[seq[l],t]
-                else:    
-                    if l == 1:  #l can't be 0
-                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
-                    else:
-                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1] - alphas[s-4,t-2]*params[seq[l],t-1]
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + removed) * params[seq[l],t]
+                #removed = alphas[s-2,t-1]*(1 - params[blank,t-1] - params[seq[l],t-1] ) ## remove the blank token (already considered in the blank state) and the duplicated label of t-1
+                #compare to the last equation
+                if l <= 1:  #l can't be 0
+                    removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
+                else:
+                    removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1] - alphas[s-4,t-2]*params[seq[l],t-1]
+                alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + removed) * params[seq[l],t]
             else: #current pos can be arbitrary tokens, including the blanks
                 if l == 0:
                     #alphas[s,t] = alphas[s,t-1] + alphas[s-1,t-1]*(1 - params[blank,t]) + alphas[s-2,t-1]*(1 - params[blank,t])
@@ -245,22 +225,22 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     if pos == seqLen-1:  ## this already contains the probability of being blank tokens as end of the sequence, L-3 and L-4 are also possible end states(same as what we do in alfree-v2, allow deletion/skip )
         #pdb.set_trace()
         #llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-1])
-        ##we need to compute the last two terms explicitly for T-2, because they are pruned at T-1 due to the original algorthm
-        llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-2]* params[blank,T-1] + alphas[L-4, T-2]*(params[blank,T-1] +  params[seq[-2],T-1]))
-        ##since we already allow skip, there we can skip from L-4 to L-2, so we can use the the same equation as below?
-        ##llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
+        llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-2]* params[blank,T-1] + alphas[L-4, T-2]*(params[blank,T-1] +  params[seq[-2],T-1])) 
     else:  
         llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
-
-    pdb.set_trace()
+	
     return -llForward
+
+def check_exit(istring):
+    if istring == "exit":
+        sys.exit(1)
     
 if __name__ == "__main__":
 
     print(sys.argv)
     if len(sys.argv) != 6:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
-        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
+        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <uttid>.\n \
+            , it analyzes the GOP using the AF-gv2 methods, the csv path must be a folder containing audios files and the metadata.csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
     uttid_list = tran_map.keys()
@@ -273,53 +253,83 @@ if __name__ == "__main__":
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
-
-    # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
-    #cuda = torch.device('cuda:1')
-    
-    #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
-    count = 0
-    with torch.no_grad():
-        #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
-        gops_list = []  # (uttid, (phoneme, scores))
-        for row in ds:
-            count += 1
-            if count > 10:
-                break
-            if row['id'] not in uttid_list:
-                print("ignore uttid: " + row['id'] + ", no transcription can be found")
+   
+    uttid = None
+    pos = None
+    labels = None
+    while True:
+        if uttid is None: 
+            uttid = input("type in the uttid or exit:")
+            check_exit(uttid)
+            if uttid not in tran_map:
+                print("uttid not found in the transcription file")
+                uttid = None
+                continue  
+            # load dataset and read soundfiles for the given uttid
+            ds= load_dataset_local_from_dict(csv_path, uttid)
+            if len(ds) == 0:
+                print("uttid not found in the audio folder")
+                uttid = None
                 continue
-            print("processing {0}".format(row['id']))
-            #get the total likelihood of the lable
-            input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-            #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
-            labels = labels.type(torch.int32)
-            ##return the log_like to check the correctness of our function
-            return_dict = model(input_values, labels = labels)
-            log_like_total = return_dict["loss"].squeeze(0)
-            logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1)
-            ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-            #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
-            llDiff = np.abs(log_like_total - ll_self)
-            if llDiff > 1 :
-                print(f"model ll: {log_like_total}, function ll: {ll_self}")
+            print("The dictionary phoneme sequence: ")
+            dict_seq = tran_map[uttid]
+            tran_pairs = [(i,phoneme) for i,phoneme in zip(range(len(dict_seq)), dict_seq)]
+            print(tran_pairs)
+            continue
+        
+        if pos is None:
+            pos = input("type in the index of phoneme to be replaced or exit:")
+            check_exit(pos)
+            if pos >= len(len(dict_seq)):
+                print("pos is larger than the limit of the current utterence")
+                pos = None
+                continue
+            
+        if labels is None:
+            cano_seq = input("type in the canonical phoneme sequence or exit, can be empty for synthesizing phoeneme insertion:")
+            check_exit(cano_seq)
+            cano_list = cano_seq.split()
+            
+            labels_text = dict_seq[:pos+1] + cano_list + dict_seq[pos+1:]
+            labels = p_tokenizer.convert_tokens_to_ids(labels_text)
+            if None in labels:
+                print("invalid phoneme in the canonical phonemes, please check and type again!")
+                labels = None
+                continue
+        print("the current canonical seqence is:")
+        print(labels_text)
+        with torch.no_grad():
+            for row in ds:
+                print("processing {0}".format(row['id']))
+                #get the total likelihood of the lable
+                input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+                labels = torch.Tensor(labels)
+                labels = labels.type(torch.int32)
+                ##return the log_like to check the correctness of our function
+                return_dict = model(input_values, labels = labels)
+                log_like_total = return_dict["loss"].squeeze(0)
+                logits = return_dict["logits"].squeeze(0) 
+                post_mat = logits.softmax(dim=-1)
+                ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+                #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
+                llDiff = np.abs(log_like_total - ll_self)
+                if llDiff > 1 :
+                    print(f"model ll: {log_like_total}, function ll: {ll_self}")
 
-            #step 2, compute the GOP
-            pids = labels.tolist()
-            gop_list = []
-            for i,pid in enumerate(pids):
-                ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-                gop = -ll_self + ll_denom
-                gop_list.append((p_tokenizer._convert_id_to_token(pid), gop))
-            gops_list.append((row['id'], gop_list))
- 
-       
+                for i in range(labels.shape[0]):
+                    ll_denom, best_path = ctc_loss_denom_best(post_mat.transpose(0,1), labels, i, blank=0)
+                    gop = -ll_self + ll_denom
+                    print("the gop value of current phoneme {0} is {1}".format(labels_text[i],gop))
+                    print("the best path for this token:")
+                    print(best_path)
+                
+            pos = None
+            labels = None
+            
+    
 
-    print("done with GOP computation")
-    writes(gops_list, sys.argv[5])
+   
+
 
 
 

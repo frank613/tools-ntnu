@@ -220,8 +220,8 @@ if __name__ == "__main__":
             error_list.append(fields[0])
     # load the pretrained model
     model_path = sys.argv[2]
-    processor = Wav2Vec2Processor.from_pretrained("fixed-data/processor")
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data/processor")
+    processor = Wav2Vec2Processor.from_pretrained("fixed-data-en/processor")
+    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data-en/processor")
     model = Wav2Vec2ForPhoneCE.from_pretrained(model_path)
     model.eval()
 

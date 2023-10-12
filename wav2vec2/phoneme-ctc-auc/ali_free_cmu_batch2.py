@@ -277,9 +277,10 @@ def compute_gop_af(post_mat, labels, ll_self, alphas, betas, order):
             for t2 in range(t1+3,T):
                 denom_sum += alphas[s1,t1]*(1-post_mat[t1+1,p_l]) * (1-post_mat[t2-1, p_r]) * betas[s2,t2]
     
-    gop = -ll_self + np.log(denom_sum)
+    gop = -ll_self - np.log(denom_sum)
     return gop
 
+#problematic function! , not usable , gop > 0 after the first P entries.
 #the original dim of the input: ll_self(L*P), batch_label(L*P*L), alphas,betas(L*P*S*T), but they are flattened for the first dim
 def compute_gop_af_batch(post_mat, ll_self, batch_label, alphas, betas):
     
@@ -321,7 +322,7 @@ def compute_gop_af_batch(post_mat, ll_self, batch_label, alphas, betas):
             beta_idx = torch.stack((torch.arange(P,L*P-P), s2_batch, torch.ones(len(s1_batch))*t2),0).tolist()
             denom_sum[P:-P] += alphas[alpha_idx]*(1-post_mat[index_list_l]) * (1-post_mat[index_list_r]) * betas[beta_idx]
   
-    gop = -ll_self + torch.log(denom_sum)
+    gop = -ll_self - torch.log(denom_sum)
     return gop
 
 def load_dataset_local_from_dict(folder_path):
@@ -374,16 +375,16 @@ if __name__ == "__main__":
     ds= load_dataset_local_from_dict(csv_path)
     #cuda = torch.device('cuda:1')
     
-    #count = 0
+    count = 0
     with torch.no_grad():
         p_set = set(p_tokenizer.get_vocab().keys())
-        p_set = p_set - sil_tokens - spec_tokens
+        p_set = sorted(p_set - sil_tokens - spec_tokens)
         pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_map = { p1:{ p2: [] for p2 in pid_set } for p1 in pid_set }  # map(p:map(p:average)
         for row in ds:
-            #count += 1
-            #if count > 1:
-            #    break
+            count += 1
+            if count > 30:
+                break
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no alignment can be found")
                 continue
@@ -405,16 +406,16 @@ if __name__ == "__main__":
             for order, pid in enumerate(labels):
                 if pid in pid_set:
                     batch_label[order,:,order] = torch.Tensor(pid_set)
-            pdb.set_trace()
             ll_self, alphas, betas = ctc_loss_batch(post_mat.transpose(0,1), batch_label.view(-1,label_length), blank=0)  
             #step 3.1
             gop_scores = compute_gop_af_batch(post_mat, ll_self, batch_label.view(-1,label_length), alphas, betas)
-            pid_seq = labels.repeat(len(pid_set),1).transpose(0,1).flatten()
             pdb.set_trace()
+            pid_seq = labels.repeat(len(pid_set),1).transpose(0,1).flatten()
             for pid,gop,pid_inner in zip(pid_seq,gop_scores,list(pid_set)*label_length):
                 gops_map[int(pid)][pid_inner].append(gop)   
             
                 
+    pdb.set_trace()
     print("done with GOP computation")
     write(gops_map, p_tokenizer, sys.argv[4])
 

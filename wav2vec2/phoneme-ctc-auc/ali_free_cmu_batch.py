@@ -368,16 +368,16 @@ if __name__ == "__main__":
     ds= load_dataset_local_from_dict(csv_path)
     #cuda = torch.device('cuda:1')
     
-    #count = 0
+    count = 0
     with torch.no_grad():
         p_set = set(p_tokenizer.get_vocab().keys())
         p_set = p_set - sil_tokens - spec_tokens
         pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_map = { p1:{ p2: [] for p2 in pid_set } for p1 in pid_set }  # map(p:map(p:average)
         for row in ds:
-            #count += 1
-            #if count > 1:
-            #    break
+            count += 1
+            if count > 30:
+                break
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no alignment can be found")
                 continue
