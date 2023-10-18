@@ -20,6 +20,7 @@ datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+sil_tokens = set(["sil","SIL","SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -74,7 +75,7 @@ def load_dataset_local_from_dict(folder_path):
     with open(folder_path + '/metadata.csv') as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
+            datadict["audio"].append(folder_path + '/' + row.split(',')[0])
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
@@ -98,8 +99,8 @@ def load_dataset_local_from_dict(folder_path):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <cano-alignment file> <w2v2-model-dir> <local-data-csv-folder> <out-file>.\n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 5 arguments <cano-alignment file> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
         , it generates the GOP using average posterior of the phoenme recognizer layer of fine-tuned w2v2 model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     ali_df = read_align(sys.argv[1]) 
@@ -107,15 +108,15 @@ if __name__ == "__main__":
     # load the pretrained model and data
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
+    prep_path = sys.argv[4]
  
-    processor = Wav2Vec2Processor.from_pretrained("fixed-data-nor/processor")
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data-nor/processor")
+    processor = Wav2Vec2Processor.from_pretrained(prep_path)
+    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForPhoneCE.from_pretrained(model_path)
     model.eval()
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path)
-    pdb.set_trace()
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
@@ -149,7 +150,7 @@ if __name__ == "__main__":
        
 
     print("done with GOP computation")
-    writes(gops_list, key_list, sys.argv[4])
+    writes(gops_list, key_list, sys.argv[5])
 
 
 

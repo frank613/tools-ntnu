@@ -19,9 +19,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([A-Z]+)([0-9])?(_\w)?')
-vowel_set = set(['AA', 'AH', 'AE', 'AO', 'AW', 'AY', 'EH', 'ER', 'EY', 'IH', 'IY', 'OW', 'OY', 'UH', 'UW'])
-cons_set = set(['B', 'CH', 'D', 'DH', 'F', 'G', 'HH', 'JH', 'K', 'L', 'M', 'N', 'NG', 'P', 'R', 'S', 'SH', 'T', 'TH', 'W', 'V', 'W', 'Y', 'Z', 'ZH'])
-p_set = vowel_set | cons_set
+sil_tokens = set(["SIL","SPN"])
+spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 
 xstr = lambda s: s or ""
 
@@ -117,7 +116,6 @@ def collect_stats_avg_posterior(post_mat, pid_seq, pid_set, gops_map):
 #can't be used for cmu, .sph file can't be detected? 
 def load_dataset_local_audiofolder(folder_path):
     dataset = datasets.load_dataset("audiofolder", data_dir=folder_path, split="train") 
-    pdb.set_trace()
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
     #get the array for single row
     def map_to_array(batch):   
@@ -131,7 +129,8 @@ def load_dataset_local_audiofolder(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
 
     return ds_filtered
 
@@ -157,6 +156,7 @@ def load_dataset_local_from_dict(folder_path):
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
     ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    #ds_filtered = ds_map
 
     return ds_filtered
 
@@ -181,11 +181,12 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path)
-    pdb.set_trace()
     #cuda = torch.device('cuda:1')
     
     #count = 0
     with torch.no_grad():
+        p_set = set(p_tokenizer.get_vocab().keys())
+        p_set = p_set - sil_tokens - spec_tokens
         pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_map = { p1:{ p2: [] for p2 in pid_set } for p1 in pid_set }  # map(p:map(p:average)
         for row in ds:

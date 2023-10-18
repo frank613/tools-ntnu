@@ -19,9 +19,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([A-Z]+)([0-9])?(_\w)?')
-vowel_set = set(['AA', 'AH', 'AE', 'AO', 'AW', 'AY', 'EH', 'ER', 'EY', 'IH', 'IY', 'OW', 'OY', 'UH', 'UW'])
-cons_set = set(['B', 'CH', 'D', 'DH', 'F', 'G', 'HH', 'JH', 'K', 'L', 'M', 'N', 'NG', 'P', 'R', 'S', 'SH', 'T', 'TH', 'W', 'V', 'W', 'Y', 'Z', 'ZH'])
-p_set = vowel_set | cons_set
+sil_tokens = set(["SIL","SPN"])
+spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 
 xstr = lambda s: s or ""
 
@@ -148,6 +147,8 @@ if __name__ == "__main__":
     
     #count = 0
     with torch.no_grad():
+        p_set = set(p_tokenizer.get_vocab().keys())
+        p_set = p_set - sil_tokens - spec_tokens
         pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_map = { p1:{ p2: [] for p2 in pid_set } for p1 in pid_set }  # map(p:map(p:average)
         for row in ds_filtered:

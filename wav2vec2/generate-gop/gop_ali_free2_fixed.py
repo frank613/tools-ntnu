@@ -60,7 +60,7 @@ def load_dataset_local_from_dict(folder_path):
     with open(folder_path + '/metadata.csv') as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
+            datadict["audio"].append(folder_path + '/' + row.split(',')[0])
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
@@ -76,8 +76,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    #ds_filtered = ds_map
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
 
     return ds_filtered
 
@@ -157,8 +157,8 @@ def ctc_loss(params, seq, blank=0):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <out-file>.\n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <preprocess-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
@@ -166,9 +166,10 @@ if __name__ == "__main__":
     # load the pretrained model and data
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
+    prep_path = sys.argv[4]
  
-    processor = Wav2Vec2Processor.from_pretrained("fixed-data-nor/processor-ctc")
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("fixed-data-nor/processor-ctc")
+    processor = Wav2Vec2Processor.from_pretrained(prep_path)
+    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
 
@@ -185,6 +186,8 @@ if __name__ == "__main__":
             #count += 1
             #if count > 10:
             #    break
+            if row['id'] != 'fabm2cy2':
+                continue
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no transcription can be found")
                 continue
@@ -197,7 +200,6 @@ if __name__ == "__main__":
             ##return the log_like to check the correctness of our function
             return_dict = model(input_values, labels = labels)
             log_like_total = return_dict["loss"].squeeze(0)
-            pdb.set_trace()
             logits = return_dict["logits"].squeeze(0) 
             post_mat = logits.softmax(dim=-1)
             ll_self, alphas, betas = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
@@ -241,7 +243,7 @@ if __name__ == "__main__":
        
 
     print("done with GOP computation")
-    writes(gops_list, sys.argv[4])
+    writes(gops_list, sys.argv[5])
 
 
 

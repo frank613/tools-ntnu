@@ -182,6 +182,13 @@ def check_arbitrary_back(in_alphas, s, t, zero_pos=[]):
     else:
         return False
     
+# return False if it's not arbitrary state, return the max label index otherwise
+def check_pointer_back(pointers, s, t):
+    if torch.count_nonzero(pointers[s,t,1:]) > 0:
+        return torch.argmax(pointers[s,t,1:])   
+    else:
+        return False
+    
 ##return likeli, given the postion for arbitrary state, also return the segement of the arbitrary state from the best path 
 def ctc_loss_denom(params, seq, pos, blank=0):
     """
@@ -274,22 +281,31 @@ def viterbi_denom(params, seq, pos, blank=0):
     ##the alphas[s,t] stors the best posterior for the current s at t,  also extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
     
-    ##For backtrace, the pointer[s,t,:] stores the source state of the alphas[s,t] at the first element. For t = 0 store -1. Store the source alphas after blocking illegal paths for arbitrary token
-    pointers = torch.zeros((L,T,P)).double()
+    ##For backtrace, the pointer[s,t,0] stores the source state of the alphas[s,t] at the first element. For t = 0 store -1. 
+    ## Store the source alphas pointers[s,t,1:] after blocking illegal paths for arbitrary token
+    #T+1, the last time step store the winner of final state 0 (only one state (0) valid at T+1)
+    pointers = torch.zeros((L,T+1,P+1)).double()
     
     # Initialize alphas for viterbi
-    alphas[0,0,0] = params[blank,0]
-    pointers[0,0,0] = -1
     if pos == 0:
         alphas[1,0] = params[:,0]  #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0]
+        alphas[0,0,0] = params[blank,0]
+        pointers[0,0,0] = -1
         pointers[1,0,0] = -1  
+        # can totally skip the pos
+        alphas[2,0,0] = params[blank,0]
+        alphas[3,0,0] = params[seq[1],0]
+        pointers[2,0,0] = -1
+        pointers[3,0,0] = -1  
     else:
+        alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
+        pointers[0,0,0] = -1
         pointers[1,0,0] = -1
 
     for t in range(1,T):
-        start = max(0,L-2*(T-t)) 
+        start = max(0,L-2*(T-t+1)) 
         for s in range(start,L):
             l = int((s-1)/2)
             # blank
@@ -300,16 +316,20 @@ def viterbi_denom(params, seq, pos, blank=0):
                 else:
                     sum, back_states = check_arbitrary_back(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state      
-                        removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
+                        if t == 1:
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
+                        else:
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
                         s0 = removed
                         s1 = sum 
                         s2 = alphas[s-2,t-1,0]
                         winner = max(s0,s1,s2)
                         alphas[s,t,0] = winner * params[blank,t]
                         if winner == s0: ## stays at s=0
-                            pointers[s,t] = s
-                        elif winner == s1: ## leaving the arbitrary state at t, keep 
-                            pointers[s,t] = back_states
+                            pointers[s,t,0] = s
+                        elif winner == s1: ## leaving the arbitrary state at t
+                            pointers[s,t,0] = s-1
+                            pointers[s,t,1:] = back_states
                         else:
                             pointers[s,t,0] = s-2
                     else:
@@ -346,7 +366,8 @@ def viterbi_denom(params, seq, pos, blank=0):
                 elif winner == s1: ## leaving the arbitrary state at t, keep 
                     pointers[s,t,0] = s-1
                 else:
-                    pointers[s,t] = back_states
+                    pointers[s,t,0] = s-2
+                    pointers[s,t,1:] = back_states
                
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow for all the paths       
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
@@ -363,7 +384,8 @@ def viterbi_denom(params, seq, pos, blank=0):
                         pointers[s,t,0] = s - 1
                     else:
                         alphas[s,t,:] = alphas_prob
-                        pointers[s,t,:] = (alphas[s,t-1,:])  # we always store the t-1 alphas in pointers 
+                        pointers[s,t,0] = s
+                        pointers[s,t,1:] = alphas[s,t-1,:]  # we always store the t-1 alphas in pointers 
                 else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
                     skip_prob = alphas[s-2,t-1,0] * params[:,t]  
                     skip_prob[seq[l-1]] = 0    
@@ -386,27 +408,56 @@ def viterbi_denom(params, seq, pos, blank=0):
                         pointers[s,t,0] = s-1
                     else:
                         alphas[s,t,:] = alphas_prob
-                        pointers[s,t,:] = (alphas[s,t-1,:])  # we always store the t-1 alphas in pointers 
+                        pointers[s,t,0] = s
+                        pointers[s,t,1:] = alphas[s,t-1,:]  # we always store the t-1 alphas in pointers 
                     
-    sum = check_arbitrary(alphas, L-2, T-1)    
-    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
+    sum, back_states = check_arbitrary_back(alphas, L-2, T-1)    
+    if sum: # last label is arbitrary, we still need to compare the skip and empty path
         #need explictly the alphas of T-2 for skip path because at T-1 only two states have values(L-1,L-2)
-        llForward = torch.log(sum + alphas[L-3, T-2,0]* params[blank,T-1] + alphas[L-4, T-2, 0]*(params[blank,T-1] +  params[seq[-2],T-1]))
+        empty_p = alphas[L-3, T-1, 0]
+        skip_p = alphas[L-4, T-1, 0]
+        winner = max(sum, empty_p, skip_p)
+        if winner == empty_p: 
+            pointers[0,T,0] = L-3
+        elif winner == skip_p: 
+            pointers[0,T,0] = L-4
+        else:
+            pointers[0,T,0] = L-2
+            pointers[0,T,1:] = alphas[L-2,T-1,:]  # we always store the t-1 alphas in pointers 
+                    
     else:
-        llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
-
-    return (-llForward, get_backtrace_path(pointers))
+        empty_p = alphas[L-1, T-1, 0]
+        final_p = alphas[L-2, T-1, 0]
+        winner = max(final_p, empty_p)
+        if winner == final_p: 
+            pointers[0,T,0] = L-2
+        else:
+            pointers[0,T,0] = L-1             
+    return get_backtrace_path(pointers)
 
 def check_exit(istring):
     if istring == "exit":
         sys.exit(1)
 
-# return the backtrace path for the current pointer table
+# return the backtrace path for the current pointer table, to find the biggest contribution to denom liklihood, and also the sub path inside the arbitrary state
 def get_backtrace_path(pointers):
     
     # always return the path for continous states with "extended pointer"
     # if no "extended pointer" found in the full path, meaning a deletion happens!
-    pass
+    T = pointers.shape[1]
+    full_path = []
+    sub_seq = [] ## label's id for the current token
+    next_state = 0 #only one state defined for the additional time step
+    for t in list(range(T-1,-1,-1)):
+        check_return = check_pointer_back(pointers,next_state,t)
+        next_state = pointers[next_state,t,0]
+        if check_return: #the arbitrary token
+            full_path.append(str(next_state) + '***')
+            sub_seq.append(check_return)
+        else:
+            full_path.append(str(next_state))
+                 
+    return (full_path.reverse(), sub_seq.reverse())
 
 if __name__ == "__main__":
 
@@ -471,33 +522,35 @@ if __name__ == "__main__":
                 continue
         print("the current canonical seqence is:")
         print(labels_text)
-        with torch.no_grad():
-            for row in ds:
-                print("processing {0}".format(row['id']))
-                #get the total likelihood of the lable
-                input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-                labels = torch.Tensor(labels)
-                labels = labels.type(torch.int32)
-                ##return the log_like to check the correctness of our function
-                return_dict = model(input_values, labels = labels)
-                log_like_total = return_dict["loss"].squeeze(0)
-                logits = return_dict["logits"].squeeze(0) 
-                post_mat = logits.softmax(dim=-1)
-                ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-                #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
-                llDiff = np.abs(log_like_total - ll_self)
-                if llDiff > 1 :
-                    print(f"model ll: {log_like_total}, function ll: {ll_self}")
+        row = ds[0]
+        print("processing {0}".format(row['id']))
+        #get the total likelihood of the lable
+        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+        labels = torch.Tensor(labels)
+        labels = labels.type(torch.int32)
+        ##return the log_like to check the correctness of our function
+        return_dict = model(input_values, labels = labels)
+        log_like_total = return_dict["loss"].squeeze(0)
+        logits = return_dict["logits"].squeeze(0) 
+        post_mat = logits.softmax(dim=-1)
+        ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+        #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
+        llDiff = np.abs(log_like_total - ll_self)
+        if llDiff > 1 :
+            print(f"model ll: {log_like_total}, function ll: {ll_self}")
 
-                for i in range(labels.shape[0]):
-                    ll_denom, best_path = viterbi_denom(post_mat.transpose(0,1), labels, i, blank=0)
-                    gop = -ll_self + ll_denom
-                    print("{0}: {1}, GOP = {2}".format(i, labels_text[i], gop))
-                    print("the best path for this token:")
-                    print(best_path)
-                
-            pos = None
-            labels = None
+        for i in range(labels.shape[0]):
+            ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+            full_path, sub_seq_ids = viterbi_denom(post_mat.transpose(0,1), labels, i, blank=0)
+            gop = -ll_self + ll_denom
+            print("{0}: {1}, GOP = {2}".format(i, labels_text[i], gop))
+            print("the best path for this token:")
+            print(full_path)
+            print("the best sub_seq for this token:")
+            sub_seq = p_tokenizer.convert_ids_to_tokens(sub_seq_ids)
+            print(sub_seq)
+        pos = None
+        labels = None
             
     
 

@@ -148,16 +148,22 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     ##extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
 
-    # Initialize alphas and forward pass 
-    alphas[0,0,0] = params[blank,0]
+    # Initialize alphas 
     if pos == 0:
+        alphas[0,0,0] = params[blank,0]
+        # can totally skip the pos
+        alphas[2,0,0] = params[blank,0]
+        alphas[3,0,0] = params[seq[1],0]
+        
         alphas[1,0] = params[0:,0]  #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0]
     else:
+        alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
 
     for t in range(1,T):
-        start = max(0,L-2*(T-t)) 
+        ###different from v3, +1 below for possible skip paths at the final states
+        start = max(0,L-2*(T-t+1)) 
         for s in range(start,L):
             l = int((s-1)/2)
             # blank
@@ -166,9 +172,13 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
                     sum = check_arbitrary(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
-                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension       
-                        removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
-                        alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]  
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
+                        if t == 1:
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
+                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]
+                        else:       
+                            removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
+                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]  
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -198,8 +208,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
          
     sum = check_arbitrary(alphas, L-2, T-1)    
     if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
-        #need explictly the alphas of T-2 for skip path because at T-1 only two states have values(L-1,L-2)
-        llForward = torch.log(sum + alphas[L-3, T-2,0]* params[blank,T-1] + alphas[L-4, T-2, 0]*(params[blank,T-1] +  params[seq[-2],T-1]))
+        #no need explictly the alphas of T-2 for skip now because in this version we extendted the valid states at time T-1
+        llForward = torch.log(sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
     else:
         llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
 
@@ -236,7 +246,7 @@ if __name__ == "__main__":
         for row in ds:
             #count += 1
             #if count > 10:
-                #break
+            #    break
             #if row['id'] != 'fabm2cy2':
                 #continue
             if row['id'] not in uttid_list:

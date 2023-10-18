@@ -56,7 +56,7 @@ def load_dataset_local_from_dict(folder_path):
     with open(folder_path + '/metadata.csv') as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
+            datadict["audio"].append(folder_path + '/' + row.split(',')[0])
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
@@ -72,8 +72,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    ds_filtered = ds_map
+    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    #ds_filtered = ds_map
 
     return ds_filtered
 
@@ -232,6 +232,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:    
                     if l == 1:  #l can't be 0
                         removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
+                    elif seq[l] == seq[l-2]: ##already removed the path to s-2(same as s) in t-1 from s-4
+                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
                     else:
                         removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1] - alphas[s-4,t-2]*params[seq[l],t-1]
                     alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + removed) * params[seq[l],t]
@@ -243,7 +245,6 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t] = alphas[s,t-1] + alphas[s-1,t-1]*(1 - params[blank,t]) + alphas[s-2,t-1]*(1 - params[blank,t] - params[seq[l-1],t]) 
        
     if pos == seqLen-1:  ## this already contains the probability of being blank tokens as end of the sequence, L-3 and L-4 are also possible end states(same as what we do in alfree-v2, allow deletion/skip )
-        #pdb.set_trace()
         #llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-1])
         ##we need to compute the last two terms explicitly for T-2, because they are pruned at T-1 due to the original algorthm
         llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-2]* params[blank,T-1] + alphas[L-4, T-2]*(params[blank,T-1] +  params[seq[-2],T-1]))
@@ -252,14 +253,13 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     else:  
         llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
 
-    pdb.set_trace()
     return -llForward
     
 if __name__ == "__main__":
 
     print(sys.argv)
     if len(sys.argv) != 6:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
+        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
@@ -279,14 +279,16 @@ if __name__ == "__main__":
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
-    count = 0
+    #count = 0
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_list = []  # (uttid, (phoneme, scores))
         for row in ds:
-            count += 1
-            if count > 10:
-                break
+            #count += 1
+            #if count > 10:
+            #    break
+            #if row['id'] != 'fabm2cy2':
+            #    continue
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no transcription can be found")
                 continue
