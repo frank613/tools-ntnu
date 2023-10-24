@@ -1,0 +1,3 @@
+python error_phone_json.py cmu_mono_gmm_frame.gop uttid.temp cano_mono_gmm_frame.txt ./label_mapped.txt out_json/cmu_mono_gmm_frame.json
+
+python error_phone_json.py cmu_mono_gmm.gop uttid.temp cano_mono_gmm.txt ./label_mapped.txt out_json/cmu_mono_gmm_align.json
