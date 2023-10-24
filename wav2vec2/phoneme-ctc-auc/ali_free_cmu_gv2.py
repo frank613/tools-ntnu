@@ -129,7 +129,9 @@ def ctc_loss_denom(params, seq, pos, blank=0):
             elif pos == l-1: #previous token is the arbitrary token
                 #removed = alphas[s-2,t-1]*(1 - params[blank,t-1] - params[seq[l],t-1] ) ## remove the blank token (already considered in the blank state) and the duplicated label of t-1
                 #compare to the last equation
-                if l <= 1:  #l can't be 0
+                if l == 1:  #l can't be 0
+                    removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
+                elif seq[l] == seq[l-2]: ##already removed the path to s-2(same as s) in t-1 from s-4
                     removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
                 else:
                     removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1] - alphas[s-4,t-2]*params[seq[l],t-1]

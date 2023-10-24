@@ -262,7 +262,7 @@ if __name__ == "__main__":
             return_dict = model(input_values, labels = labels)
             log_like_total = return_dict["loss"].squeeze(0)
             logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1)
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
             ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
             if llDiff > 1 :

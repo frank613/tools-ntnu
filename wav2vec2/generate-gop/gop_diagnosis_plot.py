@@ -11,6 +11,8 @@ from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor
 import torch
 from pathlib import Path
 import pdb
+import matplotlib.pyplot as plt
+
 
 datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
@@ -273,8 +275,235 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 
     return -llForward
 
+##return likeli, given the postion for arbitrary state
+def ctc_loss_denom_all(params, seq, pos, blank=0):
+    """
+    CTC loss function.
+    params - n x m matrix of n-D probability distributions(softmax output) over m frames.
+    seq - sequence of phone id's for given example.
+    Returns objective, alphas and betas.
+    """
+    seqLen = seq.shape[0] # Length of label sequence (# phones)
+    numphones = params.shape[0] # Number of labels
+    L = 2*seqLen + 1 # Length of label sequence with blanks
+    T = params.shape[1] # Length of utterance (time)
+    P = params.shape[0] # number of non-blank tokens    
 
-##return the segement of the arbitrary state from the best path(with the largest conrtibution to the denominator)
+    ##alphas
+    ##extend the tensor to save "arbitrary state"
+    alphas = torch.zeros((L,T,P)).double()
+
+    # Initialize alphas and forward pass 
+    if pos == 0:
+        alphas[0,0,0] = params[blank,0]
+        # can totally skip the pos
+        alphas[2,0,0] = params[blank,0]
+        alphas[3,0,0] = params[seq[1],0]
+        
+        alphas[1,0] = params[0:,0]  #an list all tokens
+        alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0]
+    else:
+        alphas[0,0,0] = params[blank,0]
+        alphas[1,0,0] = params[seq[0],0]
+
+    for t in range(1,T):
+        ###different from the gv3+, we need to strictly limit the max and end, because the alphas and betas are needed not only for computing the total likelihood 
+        start = max(0,L-2*(T-t)) 
+        for s in range(start,L):
+            l = int((s-1)/2)
+            # blank
+            if s%2 == 0:
+                if s==0:
+                    alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
+                else:
+                    sum = check_arbitrary(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension       
+                        if t == 1:
+                            ## should be = 0, totally remove the path because it's the same as the skip path
+                            # which means the only two ways to start from s=2 at t=0 is 2->3 or 2->4
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0]
+                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]
+                        else:
+                            removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
+                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]  
+                    else:
+                        alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
+            elif pos != l and pos != l-1:
+                if s == 1 or seq[l] == seq[l-1]:   # the first label or same label twice
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[seq[l],t]
+                else:
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
+                        * params[seq[l],t]
+            elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension
+                sum = check_arbitrary(alphas, s-2, t-1, [0,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum) * params[seq[l],t]
+            else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
+                if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
+                    empty_prob = alphas[s-1,t-1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + empty_prob
+                else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
+                    skip_prob = alphas[s-2,t-1,0] * params[:,t]  
+                    skip_prob[seq[l-1]] = 0    
+                    skip_prob[0] = 0    
+
+                    empty_prob = alphas[s-1,t-1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + skip_prob + empty_prob
+         
+    sum = check_arbitrary(alphas, L-2, T-1)    
+    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
+        #need explictly the alphas of T-2 for skip path because at T-1 only two states have values(L-1,L-2)
+        llForward = torch.log(sum + alphas[L-3, T-2,0]* params[blank,T-1] + alphas[L-4, T-2, 0]*(params[blank,T-1] +  params[seq[-2],T-1]))
+    else:
+        llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
+
+    ####betas
+    betas = torch.zeros((L,T,P)).double()
+    
+    # Initialize betas and backward pass
+    if pos == seqLen - 1:
+        betas[-1,-1,0] = params[blank,-1]
+        # can totally skip the pos
+        alphas[-3,-1,0] = params[blank,0]
+        alphas[-4,-1,0] = params[seq[-2],0]
+        
+        betas[-2,-1] = params[-1:,0]  #an list all tokens
+        betas[-2,-1,0] = 0  #can't be blank
+    else:
+        betas[-1,-1,0] = params[blank,-1]
+        betas[-2,-1,0] = params[seq[-1],-1]
+
+    ###for loop from T-1 -> 0
+    for t in range(T-2,-1, -1):
+        end = min(2*t+2,L) 
+        for s in range(end-1,-1,-1):
+            l = int((s-1)/2)
+            # blank
+            if s%2 == 0:
+                if s==L-1:
+                    betas[s,t,0] = betas[s,t+1,0] * params[blank,t]
+                else:
+                    sum = check_arbitrary(betas, s+1, t+1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension       
+                        removed =  betas[s,t+1,0] - betas[s+2,t+2,0] * params[blank,t+1]  ## allow for jump, but only once, same as in v2
+                        betas[s,t,0] = (removed + sum + betas[s+2,t+1,0]) * params[blank,t]  
+                    else:
+                        betas[s,t,0] = (betas[s,t+1,0] + betas[s+1,t+1,0]) * params[blank,t]
+            elif pos != l and pos != l+1:
+                if s == 1 or seq[l] == seq[l+1]:   # the first label or same label twice
+                    betas[s,t,0] = (betas[s,t+1,0] + betas[s+1,t+1,0]) * params[seq[l],t]
+                else:
+                    betas[s,t,0] = (betas[s,t+1,0] + betas[s+1,t+1,0] + betas[s+2,t+1,0]) \
+                        * params[seq[l],t]
+            elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension
+                sum = check_arbitrary(betas, s+2, t+1, [0,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                betas[s,t,0] = (betas[s,t+1,0] + betas[s+1,t+1,0] + sum) * params[seq[l],t]
+            else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
+                if s == L-2: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
+                    empty_prob = betas[s+1,t+1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    betas[s,t,:] = (betas[s,t+1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + empty_prob
+                else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
+                    skip_prob = betas[s+2,t+1,0] * params[:,t]  
+                    skip_prob[seq[l+1]] = 0    
+                    skip_prob[0] = 0    
+
+                    empty_prob = betas[s+1,t+1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    betas[s,t,:] = (betas[s,t+1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + skip_prob + empty_prob
+    
+    sum = check_arbitrary(betas, 1, 0)    
+    if sum: 
+        #need explictly the betas of t=1 for skip path because at 0 only two states have values(0,1)
+        llBackward = torch.log(sum + betas[2,1,0]* params[blank,0] + betas[3,1,0]*(params[blank,0] +  params[seq[1],0]))
+    else:
+        llBackward = torch.log(betas[0, 0, 0] + betas[1, 0, 0])
+    
+    if np.abs(llForward-llBackward) > 1e-5 :
+        sys.exit("llDiff too big, check the results")
+        
+    return (-llForward, alphas, betas)
+
+##return likeli, given the postion for arbitrary state, also the alphas and betas
+def ctc_loss_denom_return(params, seq, pos, blank=0):
+    """
+    CTC loss function.
+    params - n x m matrix of n-D probability distributions(softmax output) over m frames.
+    seq - sequence of phone id's for given example.
+    Returns objective, alphas and betas.
+    """
+    seqLen = seq.shape[0] # Length of label sequence (# phones)
+    numphones = params.shape[0] # Number of labels
+    L = 2*seqLen + 1 # Length of label sequence with blanks
+    T = params.shape[1] # Length of utterance (time)
+    P = params.shape[0] # number of non-blank tokens    
+
+    ##extend the tensor to save "arbitrary state"
+    alphas = torch.zeros((L,T,P)).double()
+
+    # Initialize alphas and forward pass 
+    alphas[0,0,0] = params[blank,0]
+    if pos == 0:
+        alphas[1,0] = params[0:,0]  #an list all tokens
+        alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0]
+    else:
+        alphas[1,0,0] = params[seq[0],0]
+
+    for t in range(1,T):
+        start = max(0,L-2*(T-t)) 
+        for s in range(start,L):
+            l = int((s-1)/2)
+            # blank
+            if s%2 == 0:
+                if s==0:
+                    alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
+                else:
+                    sum = check_arbitrary(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension       
+                        removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
+                        alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]  
+                    else:
+                        alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
+            elif pos != l and pos != l-1:
+                if s == 1 or seq[l] == seq[l-1]:   # the first label or same label twice
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[seq[l],t]
+                else:
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
+                        * params[seq[l],t]
+            elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension
+                sum = check_arbitrary(alphas, s-2, t-1, [0,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum) * params[seq[l],t]
+            else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
+                if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
+                    empty_prob = alphas[s-1,t-1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + empty_prob
+                else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
+                    skip_prob = alphas[s-2,t-1,0] * params[:,t]  
+                    skip_prob[seq[l-1]] = 0    
+                    skip_prob[0] = 0    
+
+                    empty_prob = alphas[s-1,t-1,0] * params[:,t]
+                    empty_prob[0] = 0
+
+                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + skip_prob + empty_prob
+         
+    sum = check_arbitrary(alphas, L-2, T-1)    
+    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
+        #need explictly the alphas of T-2 for skip path because at T-1 only two states have values(L-1,L-2)
+        llForward = torch.log(sum + alphas[L-3, T-2,0]* params[blank,T-1] + alphas[L-4, T-2, 0]*(params[blank,T-1] +  params[seq[-2],T-1]))
+    else:
+        llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
+
+    return -llForward
+
+##return the segement of the arbitrary state from the best path(with the largest conrtibution to the denominator), compare it to the forward algrotihm, we don't need to "remove" anything because we take the maximum for viterbi
 def viterbi_denom(params, seq, pos, blank=0):
     """
     CTC loss function.
@@ -327,9 +556,7 @@ def viterbi_denom(params, seq, pos, blank=0):
                     sum, back_states = check_arbitrary_back(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state      
                         if t == 1:
-                            ## should be = 0, totally remove the path because it's the same as the skip path
-                            # which means the only two ways to start from s=2 at t=0 is 2->3 or 2->4
-                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] 
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
                         else:
                             removed = alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
                         s0 = removed
@@ -471,6 +698,54 @@ def get_backtrace_path(pointers):
                  
     return (full_path, sub_seq)
 
+def plot_posterior_gragh(label_ids, post_mat, full_path, decode_path, alphas, betas, out_fname, p_tokenizer):
+    ## plot the poseterior heat for each time step and state, also draw the full_path line
+    reduced_a = alphas.sum(-1)
+    reduced_b = betas.sum(-1)
+    p_matrix = torch.zeros_like(alphas)
+    p_matrix[::2] = post_mat[0]
+    for i,l in enumerate(labels):
+        p_matrix[2*i+1] = post_mat[l]      
+    posterior_matrix = reduced_a * reduced_b / p_matrix
+    ##normalize each time step
+    posterior_matrix = posterior_matrix/posterior_matrix.sum(0).flip(0)
+    posterior_matrix = posterior_matrix.numpy()
+    
+    ##plot
+    fig, ax = plt.subplots()
+    im = ax.imshow(posterior_matrix)
+    labels = p_tokenizer.convert_ids_to_tokens(label_ids.flip(0))
+
+    # Create colorbar
+    cbar = ax.figure.colorbar(im)
+    cbar.ax.set_ylabel("normalized posteior of pathes that went through (s,t)", rotation=-90, va="bottom")
+    
+    # Show all ticks and label them with the respective list entries
+    ax.set_xticks(np.arange(posterior_matrix.shape[1]), labels=np.arange(posterior_matrix.shape[1]))
+    ax.set_yticks(np.arange(posterior_matrix.shape[0]), labels=labels)
+
+    # Rotate the tick labels and set their alignment.
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right",
+            rotation_mode="anchor")
+
+    # full_path
+    full_path_height = len(full_path)- 1 - 0.5 - np.array(full_path)
+    ax.step(np.arange(posterior_matrix.shape[1]),full_path_height, where="post")
+    
+    fig.tight_layout()
+    #plt.show()
+    out_file = "./out-plot" + "/" + out_fname + ".png"
+    os.makedirs(os.path.dirname(out_file), exist_ok=True)
+    plt.savefig(out_file)
+    
+    
+
+def decode_post(post_mat, p_tokenizer): 
+    ##plot decode path using "maximum t" strategy
+    ids = torch.argmax(post_mat, 0)
+    return p_tokenizer.convert_ids_to_tokens(ids)
+    
+
 if __name__ == "__main__":
 
     print(sys.argv)
@@ -551,11 +826,14 @@ if __name__ == "__main__":
             ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
             #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
+            print("the best decode path:")
+            best_decode_path = decode_post(post_mat.transpose(0,1), p_tokenizer)
+            print(best_decode_path)
             if llDiff > 1 :
                 print(f"model ll: {log_like_total}, function ll: {ll_self}")
     
             for i in range(labels.shape[0]):
-                ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+                ll_denom, alphas, betas = ctc_loss_denom_all(post_mat.transpose(0,1), labels, i, blank=0)
                 gop = -ll_self + ll_denom
                 pointers = viterbi_denom(post_mat.transpose(0,1), labels, i, blank=0)
                 full_path, sub_seq_ids = get_backtrace_path(pointers)
@@ -567,6 +845,8 @@ if __name__ == "__main__":
                 print("the best sub_seq for this token:")
                 sub_seq = p_tokenizer.convert_ids_to_tokens(sub_seq_ids)
                 print(sub_seq)
+                print("generating plots")
+                plot_posterior_gragh(labels, post_mat.transpose(0,1), full_path, best_decode_path, alphas, betas, labels_text[i],p_tokenizer)
             pos = None
             labels = None
             

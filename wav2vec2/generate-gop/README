@@ -1,0 +1,12 @@
+python gop_avg_posterior.py ./ali.teflon.phonemes.txt ./models/norweigian-phoneme-ce/ ./data/local/teflon/ fixed-data-nor/processor/ ./out_teflon.gop
+
+python gop_avg_posterior.py ./ali.cmu.phonemes.txt ./models/wav2vec2_phoneme_ce/ ./data/local/cmu/train fixed-data-en/processor/ ./out_cmu_avg_posterior.gop
+
+python gop_ali_free.py teflon.ctm ./models/ctc-nor/ data/local/teflon/ ./teflon_alifree.gop
+
+python gop_ali_free_giamp_v2.py teflon.ctm ./models/ctc-nor/ data/local/teflon/ fixed-data-nor/processor-ctc/ ./teflon_alifree_giamp_v2.gop
+
+python gop_ali_free_giamp_v2.py cmu.all.ctm ./models/ctc-en/ data/local/cmu/ fixed-data-en/processor-en-ctc/ ./cmu_gv2.gop
+python gop_ali_free_giamp.py cmu.all.ctm ./models/ctc-en/ data/local/cmu/ fixed-data-en/processor-en-ctc/ ./cmu_gv1.gop
+
+
