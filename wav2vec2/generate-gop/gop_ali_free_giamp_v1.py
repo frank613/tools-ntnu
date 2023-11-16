@@ -16,9 +16,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
-#spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil","SIL","SPN"])
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+sil_tokens = set(["sil", "SIL", "SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -45,7 +44,7 @@ def read_trans(trans_path):
             if items[0] != cur_uttid and items[0] not in trans_map: 
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
-            phoneme = re_phone.match(items[4]).group(1)
+            phoneme = re_phone.match(items[4]).group(1)                
             if phoneme not in (sil_tokens | spec_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
@@ -118,56 +117,20 @@ def ctc_loss(params, seq, blank=0):
 	
     return -llForward
 
-##return only likeli
-def ctc_loss_scaled(params, seq, blank=0):
-    """
-    CTC loss function.
-    params - n x m matrix of n-D probability distributions(softmax output) over m frames.
-    seq - sequence of phone id's for given example.
-    Returns objective, alphas and betas.
-    """
-    seqLen = seq.shape[0] # Length of label sequence (# phones)
-    numphones = params.shape[0] # Number of labels
-    L = 2*seqLen + 1 # Length of label sequence with blanks
-    T = params.shape[1] # Length of utterance (time)
-
-    alphas = torch.zeros((L,T)).double()
-
-    # Initialize alphas and forward pass 
-    alphas[0,0] = params[blank,0]
-    alphas[1,0] = params[seq[0],0]
-    c = alphas[:,0].sum()
-    alphas[:,0] = alphas[:,0] / c
-    llForward = torch.log(c)
-
-    for t in range(1,T):
-        start = max(0,L-2*(T-t)) 
-        end = min(2*t+2,L)
-        for s in range(start,L):
-            l = int((s-1)/2)
-            # blank
-            if s%2 == 0:
-                if s==0:
-                    alphas[s,t] = alphas[s,t-1] * params[blank,t]
-                else:
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[blank,t]
-            # same label twice
-            elif s == 1 or seq[l] == seq[l-1]:
-                alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[seq[l],t]
-            else:
-                alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
-                    * params[seq[l],t]
-            
-        # normalize at current time (prevent underflow)
-        c = alphas[start:end,t].sum()
-        alphas[start:end,t] = alphas[start:end,t] / c
-        llForward += torch.log(c)
-        
-    return -llForward
-
-
+##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
+##zero pos must "-1" because we already remove the blank token in the last dimension
+def check_arbitrary(in_alphas, s, t, zero_pos=None):
+    if torch.count_nonzero(in_alphas[s,t]) > 1:
+        if zero_pos:
+            mask = torch.ones_like(in_alphas[s,t])
+            mask[zero_pos] = 0
+            return sum(in_alphas[s,t][mask.bool()])
+        else:
+            return sum(in_alphas[s,t][:])
+    else:
+        return False
     
-##return only likeli, given the postion for allowing arbitrary tokens
+##return only likeli, given the postion for arbitrary state
 def ctc_loss_denom(params, seq, pos, blank=0):
     """
     CTC loss function.
@@ -179,87 +142,65 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     numphones = params.shape[0] # Number of labels
     L = 2*seqLen + 1 # Length of label sequence with blanks
     T = params.shape[1] # Length of utterance (time)
-    
-    #skipped_vector = [False] * seqLen 
+    P = params.shape[0] - 1 # number of non-blank tokens    
 
-    alphas = torch.zeros((L,T)).double()
+    ##extend the tensor to save "arbitrary state"
+    alphas = torch.zeros((L,T,P)).double()
 
     # Initialize alphas and forward pass 
-    # remain blanks blank
-    alphas[0,0] = params[blank,0]  
+    alphas[0,0,0] = params[blank,0]
     if pos == 0:
-        alphas[1,0] = 1 - params[blank,0] # all non-blank output are allowed, because it is the first time entering the wildcard state
+        alphas[1,0] = params[1:,0]  #an list of non-blank 
     else:
-        alphas[1,0] = params[seq[0],0]
-
+        alphas[1,0,0] = params[seq[0],0]
 
     for t in range(1,T):
         start = max(0,L-2*(T-t)) 
         ##end = min(2*t+2,L)
         for s in range(start,L):
             l = int((s-1)/2)
-           
-            if s%2 == 0:  # blank
+            # blank
+            if s%2 == 0:
                 if s==0:
-                    alphas[s,t] = alphas[s,t-1] * params[blank,t]
-                elif pos == l: ##leave the wildcard state with an emtpy token. 
-                    #remove the path duplicated with the "skip" path from alphas[s,t-1], t-2 is a bug when t=1?
-                    #removed1 =  alphas[s,t-1] - alphas[s-2,t-2] * params[blank,t-1]
-                    #fixing the bug?
-                    if t == 1:
-                        removed1 =  alphas[s,t-1] - alphas[s-2,t-2] * params[blank,t-1]
-                        #the wild card state must remove the "blank" path from the previous time(t-1), because it's overlapped with the first term:  alphas[s,t-1]
-                        removed2 =  alphas[s-1,t-1] - alphas[s-1,t-2] * params[blank,t-1]
-                    else: # t=1
-                        removed1 = 0
-                        removed2 = alphas[s-1,t-1] ## already removed blank at initial step
-                    #we also allow "skip" action: alphas[s-2,t-1] for gop to model token deletion. (This skip is allowed only once for each blank state, otherwise duplicated computation)
-                    alphas[s,t] = (removed1 + removed2 + alphas[s-2,t-1]) * params[blank,t]
-
-                else: #normal update of blank
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[blank,t]
+                    alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
+                else:
+                    sum = check_arbitrary(alphas, s-1, t-1)
+                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
+                        alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]  
+                    else:
+                        alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
                 if s == 1 or seq[l] == seq[l-1]:   # the first label or same label twice
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[seq[l],t]
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[seq[l],t]
                 else:
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
                         * params[seq[l],t]
-            elif pos == l-1: #previous token is the arbitrary token
-                #removed = alphas[s-2,t-1]*(1 - params[blank,t-1] - params[seq[l],t-1] ) ## remove the blank token (already considered in the blank state) and the duplicated label of t-1, compare to the last equation
-                if t == 1 and s == 3: # the only possible path is from s=1(pos) -> s=3
-                    removed = alphas[s-2,t-1] - params[seq[l],t-1]
-                    alphas[s,t] =  removed * params[seq[l],t]
-                else:    
-                    if l == 1:  #l can't be 0
-                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
-                    elif seq[l] == seq[l-2]: ##already removed the path to s-2(same as s) in t-1 from s-4
-                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1]
-                    else:
-                        removed = alphas[s-2,t-1] - alphas[s-2,t-2]*(params[blank,t-1] + params[seq[l],t-1]) - alphas[s-3,t-2]*params[seq[l],t-1] - alphas[s-4,t-2]*params[seq[l],t-1]
-                    alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + removed) * params[seq[l],t]
-            else: #current pos can be arbitrary tokens, including the blanks
-                if l == 0:
-                    #alphas[s,t] = alphas[s,t-1] + alphas[s-1,t-1]*(1 - params[blank,t]) + alphas[s-2,t-1]*(1 - params[blank,t])
-                    alphas[s,t] = alphas[s,t-1] + alphas[s-1,t-1]*(1 - params[blank,t]) 
+            elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension
+                sum = check_arbitrary(alphas, s-2, t-1, seq[l]-1)  ##remove the entry of the "l"th token in the last dim, because it's not allowed for a direct transfer for dublicated label
+                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum) * params[seq[l],t]
+            else: #current pos can be non-blank arbitrary tokens, keep the same token if already in the state of t-1
+                if s == 1:
+                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t]
                 else:
-                    alphas[s,t] = alphas[s,t-1] + alphas[s-1,t-1]*(1 - params[blank,t]) + alphas[s-2,t-1]*(1 - params[blank,t] - params[seq[l-1],t]) 
-       
-    if pos == seqLen-1:  ## this already contains the probability of being blank tokens as end of the sequence, L-3 and L-4 are also possible end states(same as what we do in alfree-v2, allow deletion/skip )
-        #llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-1])
-        ##we need to compute the last two terms explicitly for T-2, because they are pruned at T-1 due to the original algorthm
-        llForward = torch.log(alphas[L-2, T-1] + alphas[L-3, T-2]* params[blank,T-1] + alphas[L-4, T-2]*(params[blank,T-1] +  params[seq[-2],T-1]))
-        ##since we already allow skip, there we can skip from L-4 to L-2, so we can use the the same equation as below?
-        ##llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
-    else:  
-        llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
+                    skip_prob = alphas[s-2,t-1,0] * params[1:,t]  
+                    skip_prob[seq[l] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
+                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t] + skip_prob
+         
 
+
+    sum = check_arbitrary(alphas, L-2, T-1)    
+    if sum: # last label is arbitrary
+        llForward = torch.log(sum + alphas[L-1, T-1, 0])
+    else:
+        llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
+	
     return -llForward
     
 if __name__ == "__main__":
 
     print(sys.argv)
     if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
+        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
@@ -287,8 +228,6 @@ if __name__ == "__main__":
             #count += 1
             #if count > 10:
             #    break
-            #if row['id'] != 'fabm2cy2':
-            #    continue
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no transcription can be found")
                 continue
@@ -304,7 +243,6 @@ if __name__ == "__main__":
             logits = return_dict["logits"].squeeze(0) 
             post_mat = logits.softmax(dim=-1).type(torch.float64)
             ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-            #ll_self = ctc_loss_scaled(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
             if llDiff > 1 :
                 print(f"model ll: {log_like_total}, function ll: {ll_self}")

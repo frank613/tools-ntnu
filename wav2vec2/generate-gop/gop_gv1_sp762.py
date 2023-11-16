@@ -51,28 +51,24 @@ def read_trans(trans_path):
 
 
 def load_dataset_local_from_dict(folder_path):
-    datadict = {"audio": []}  
+    datadict = {"audio": [], "p_text":[]}  
     with open(folder_path + '/metadata.csv') as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/train/' + row.split(',')[0])
+            filename,trans,scores = row.split(',')
+            datadict["audio"].append(folder_path + '/' + filename)
+            datadict["p_text"].append(trans.split(' '))
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
-        batch["p_text"] = []
         batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
-        for uid in batch["id"]:
-            if uid not in uttid_list:
-                batch["p_text"].append(None)
-            else:
-                batch["p_text"].append(tran_map[uid])
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    #ds_filtered = ds_map
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
 
     return ds_filtered
 
@@ -199,16 +195,14 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 6:
-        sys.exit("this script takes 4 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
+    if len(sys.argv) != 5:
+        sys.exit("this script takes 4 arguments <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
     #step 0, read the files
-    tran_map = read_trans(sys.argv[1]) 
-    uttid_list = tran_map.keys()
     # load the pretrained model and data
-    model_path = sys.argv[2]
-    csv_path = sys.argv[3]
-    prep_path = sys.argv[4]
+    model_path = sys.argv[1]
+    csv_path = sys.argv[2]
+    prep_path = sys.argv[3]
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
@@ -228,20 +222,17 @@ if __name__ == "__main__":
             #count += 1
             #if count > 10:
             #    break
-            if row['id'] not in uttid_list:
-                print("ignore uttid: " + row['id'] + ", no transcription can be found")
-                continue
             print("processing {0}".format(row['id']))
             #get the total likelihood of the lable
             input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
             #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
+            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(row["p_text"]))
             labels = labels.type(torch.int32)
             ##return the log_like to check the correctness of our function
             return_dict = model(input_values, labels = labels)
             log_like_total = return_dict["loss"].squeeze(0)
             logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1)
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
             ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
             llDiff = np.abs(log_like_total - ll_self)
             if llDiff > 1 :
@@ -259,7 +250,7 @@ if __name__ == "__main__":
        
 
     print("done with GOP computation")
-    writes(gops_list, sys.argv[5])
+    writes(gops_list, sys.argv[4])
 
 
 

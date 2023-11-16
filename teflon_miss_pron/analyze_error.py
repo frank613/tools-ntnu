@@ -9,7 +9,7 @@ from sklearn.model_selection import KFold
 from statistics import mean
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
-opt_SIL = 'sil' ##can be different for different models
+opt_SIL = ['sil'] ##can be different for different models
 def readGOP(gop_file, p_table):
     in_file = open(gop_file, 'r')
     isNewUtt = True
@@ -34,11 +34,11 @@ def readGOP(gop_file, p_table):
         if line == '':
             if not skip:
                 ## length in the gop file must the same as 2(sil) + len(anno)
-                #assert( len(label_phoneme)+2 == len(seq_score))
+                assert( len(label_phoneme) == len(seq_score))
                 if len(label_phoneme) != len(seq_score):
                     pdb.set_trace()
                     sys.exit()
-                df_temp.append((uttid, [(p,g,l) for (p,g),l in zip(seq_score[1:-1], label_phoneme)]))
+                df_temp.append((uttid, [(p,g,l) for (p,g),l in zip(seq_score, label_phoneme)]))
             seq_score = []
             label_phoneme = []
             isNewUtt = True
@@ -52,7 +52,7 @@ def readGOP(gop_file, p_table):
             sys.exit("non legal phoneme found in the gop file")
         cur_score = float(fields[2])
         ####optional silence 
-        if cur_phoneme != opt_SIL:
+        if cur_phoneme not in opt_SIL:
             seq_score.append((cur_phoneme, cur_score))
     return df_temp
 

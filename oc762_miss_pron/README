@@ -1,0 +1,1 @@
+python evaluate_gop.py ./gops/so762_gv1.gop ./metadata.csv ./utt2dur_train ./utt2dur_test

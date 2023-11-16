@@ -5,4 +5,6 @@ python gop_avg_posterior.py ./ali.teflon.phoneme.txt ./models/norweigian-phoneme
 python ali_free_cmu_gv2.py ./cmu.all.ctm ./models/ctc-en/ ./data/local/cmu/train/ ./out_cmu_giamp_v2.json
 
 
-#filtered cmu
+##txt and auc
+python ali_free_cmu_gv2_file.py ./cmu.all.ctm ./models/ctc-en/ ./data/local/cmu/train/ ./output/out_cmu_all_gv2.txt
+python cal_auc.py --filter ./error_uttid.txt output/out_cmu_all_gv2.txt ./filtered_out_cmu_all_gv2.json

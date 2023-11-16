@@ -10,3 +10,4 @@ python gop_ali_free_giamp_v2.py cmu.all.ctm ./models/ctc-en/ data/local/cmu/ fix
 python gop_ali_free_giamp.py cmu.all.ctm ./models/ctc-en/ data/local/cmu/ fixed-data-en/processor-en-ctc/ ./cmu_gv1.gop
 
 
+python gop_diagnosis_plot.py ./cmu.all.ctm ./models//ctc-en/ ./data/local/cmu/train/ ./fixed-data-en/processor-en-ctc/
