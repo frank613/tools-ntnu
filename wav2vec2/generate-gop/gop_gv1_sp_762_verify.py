@@ -16,40 +16,15 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic
 datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
+sil_tokens = set(["SIL","SPN"])
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil", "SIL", "SPN"])
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
-
-def writes(gops_list, outFile):
-    os.makedirs(os.path.dirname(outFile), exist_ok=True)
-    with open(outFile, 'w') as fw:
-        for key, gop_list in gops_list:
-            fw.write(key+'\n')
-            for cnt, (p,score) in enumerate(gop_list):
-                fw.write("%d %s %.3f\n"%(cnt, p, score))
-            fw.write("\n")
-  
-    
-def read_trans(trans_path):
-    trans_map = {}
-    cur_uttid = ""
-    with open(trans_path, "r") as ifile:
-        for line in ifile:
-            items = line.strip().split()
-            if len(items) != 5:
-                sys.exit("input trasncription file must be in the Kaldi CTM format")
-            if items[0] != cur_uttid and items[0] not in trans_map: 
-                cur_uttid = items[0]
-                trans_map[cur_uttid] = []
-            phoneme = re_phone.match(items[4]).group(1)                
-            if phoneme not in (sil_tokens | spec_tokens):
-                trans_map[cur_uttid].append(phoneme)
-    return trans_map 
-
-
+##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
+torch.set_num_threads(1)
+ 
 def load_dataset_local_from_dict(folder_path):
     datadict = {"audio": [], "p_text":[]}  
     with open(folder_path + '/metadata.csv') as csvfile:
@@ -67,7 +42,7 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
     ds_filtered = ds_map
 
     return ds_filtered
@@ -109,9 +84,9 @@ def ctc_loss(params, seq, blank=0):
                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                     * params[seq[l],t]
 	    
-    llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
+    forward_prob = (alphas[L-1, T-1] + alphas[L-2, T-1])
 	
-    return -llForward
+    return forward_prob
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos must "-1" because we already remove the blank token in the last dimension
@@ -175,13 +150,9 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 sum = check_arbitrary(alphas, s-2, t-1, seq[l]-1)  ##remove the entry of the "l"th token in the last dim, because it's not allowed for a direct transfer for dublicated label
                 alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum) * params[seq[l],t]
             else: #current pos can be non-blank arbitrary tokens, keep the same token if already in the state of t-1
-                if s == 1:
-                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t]
-                else:
-                    skip_prob = alphas[s-2,t-1,0] * params[1:,t]  
-                    #skip_prob[seq[l] - 1] = 0   # wrong?
-                    skip_prob[seq[l-1] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
-                    alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t] + skip_prob
+                skip_prob = alphas[s-2,t-1,0] * params[1:,t]  
+                skip_prob[seq[l] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
+                alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t] + skip_prob
          
 
 
@@ -192,7 +163,39 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
 	
     return -llForward
-    
+
+
+def single_process(example, p_tokenizer, processor, model, out_path):
+    row = example
+    proc_id = str(os.getpid())
+    print("processing {0}".format(row['id']))
+    with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
+        f.write(row['id']+'\n')
+        #get the total likelihood of the lable
+        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+        #the default loss here in the config file is "ctc_loss_reduction": "sum" 
+        labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(row["p_text"]))
+        labels = labels.type(torch.int32)
+        ##return the log_like to check the correctness of our function
+        return_dict = model(input_values, labels = labels)
+        log_like_total = return_dict["loss"].squeeze(0)
+        logits = return_dict["logits"].squeeze(0) 
+        post_mat = logits.softmax(dim=-1)
+
+        #step 2, compute the GOP
+        pids = labels.tolist()
+        num_non_blank = logits.shape[1]
+        for i,pid in enumerate(pids):
+            denom_total = 0
+            for sub_pid in range(1, num_non_blank):
+                new_labels = labels.clone().detach()
+                new_labels[i] = sub_pid
+                ctc = ctc_loss(post_mat.transpose(0,1), new_labels, blank=0)
+                denom_total += ctc
+            gop = -log_like_total + (-torch.log(denom_total))
+            f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), str(gop)))
+        f.write("\n")
+     
 if __name__ == "__main__":
 
     print(sys.argv)
@@ -204,56 +207,26 @@ if __name__ == "__main__":
     model_path = sys.argv[1]
     csv_path = sys.argv[2]
     prep_path = sys.argv[3]
+    
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
+    
+    # p_set = set(p_tokenizer.get_vocab().keys())
+    # p_set = p_set - sil_tokens - spec_tokens
+    # pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path)
+    for row in ds:
+        if row['id'] != '000010063':
+            continue
+        print("processing {0}".format(row['id']))
+        single_process(row, p_tokenizer, processor, model, sys.argv[4])
+    #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[4]}, num_proc=20) 
     #cuda = torch.device('cuda:1')
-    
-    #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
-    #count = 0
-    with torch.no_grad():
-        #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
-        gops_list = []  # (uttid, (phoneme, scores))
-        for row in ds:
-            #count += 1
-            #if count > 10:
-            #    break
-            #if row['id'] != "000010063":
-                #continue
-            print("processing {0}".format(row['id']))
-            #get the total likelihood of the lable
-            input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-            #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(row["p_text"]))
-            labels = labels.type(torch.int32)
-            ##return the log_like to check the correctness of our function
-            return_dict = model(input_values, labels = labels)
-            log_like_total = return_dict["loss"].squeeze(0)
-            logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1).type(torch.float64)
-            ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-            llDiff = np.abs(log_like_total - ll_self)
-            if llDiff > 1 :
-                print(f"model ll: {log_like_total}, function ll: {ll_self}")
-
-            #step 2, compute the GOP
-            pids = labels.tolist()
-            gop_list = []
-            for i,pid in enumerate(pids):
-                ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-                gop = -ll_self + ll_denom
-                gop_list.append((p_tokenizer._convert_id_to_token(pid), gop))
-            gops_list.append((row['id'], gop_list))
- 
-       
-
-    print("done with GOP computation")
-    writes(gops_list, sys.argv[4])
 
 
 

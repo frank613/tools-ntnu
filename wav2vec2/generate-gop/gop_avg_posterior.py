@@ -25,11 +25,13 @@ sil_tokens = set(["sil","SIL","SPN"])
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
-def seg_to_token_seq(pid_seq):
+##segmentation, new phonemes are annotated as "_N"
+def seg_to_token_seq(p_tokenizer,p_seq):
     segmented = [] #list of pair (pid, start_idx, end_idx) end_idx overlaps the start_idx of the next phoneme
     temp,idx_start = '', 0
-    for i,pid in enumerate(pid_seq):
-        if temp != pid:
+    for i,p in enumerate(p_seq):
+        if p.endswith('_#'):
+            pid = p_tokenizer._convert_token_to_id(p.strip("_#"))
             segmented.append([temp, idx_start, i])
             temp = pid
             idx_start = i
@@ -48,15 +50,37 @@ def writes(gop_list, key_list, outFile):
             for cnt, (p,score) in enumerate(gop):
                 fw.write("%d %s %.3f\n"%(cnt, p, score))
             fw.write("\n")
-    
+
 def read_align(align_path):
     utt_list =[]
     with open(align_path, "r") as ifile:
+        ##to mark different phonemes: e.g "T" in " went to"
         for line in ifile:
             line = line.strip()
             uttid, phonemes = line.split(' ')[0], line.split(' ')[1:]
             uttid = uttid.strip("lbi-")
-            p_list = list(map(lambda x: re_phone.match(x).group(1), phonemes))
+            p_list = []
+            prev_tag = ''
+            prev_p = ''
+            prev_tone = '' 
+            for p in phonemes:
+                pure_phoneme = re_phone.match(p).group(1)
+                tone = re_phone.match(p).group(2)
+                tag = re_phone.match(p).group(3)
+                if prev_p != pure_phoneme:
+                    p_list.append(pure_phoneme + "_#") 
+                elif prev_tone != tone:
+                    p_list.append(pure_phoneme + "_#") 
+                elif prev_tag != tag:
+                    p_list.append(pure_phoneme + "_#") 
+                #elif tag == '_I' and prev_tone != tone:
+                #    p_list.append(pure_phoneme + "_#") 
+                else:
+                    p_list.append(pure_phoneme) 
+                prev_p = pure_phoneme
+                prev_tone = tone
+                prev_tag = tag
+                #p_list = list(map(lambda x: re_phone.match(x).group(1), phonemes))
             utt_list.append((uttid, p_list))
     return pd.DataFrame(utt_list, columns=('uttid','phonemes')) 
 
@@ -91,7 +115,8 @@ def load_dataset_local_from_dict(folder_path):
         return batch
 
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
+    ds_filtered = ds_map
 
     return ds_filtered
 
@@ -135,11 +160,12 @@ if __name__ == "__main__":
             print("processing {0}".format(row['id']))
             #step 1, segmentation (pid_seq = list of (pid, start_idx, end_idx)
             p_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
-            pid_seq = seg_to_token_seq(p_tokenizer.convert_tokens_to_ids(p_seq))
+            pid_seq = seg_to_token_seq(p_tokenizer,p_seq)
             #step 2 get the posterior matrix:
             input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
             logits = model(input_values)["logits"].squeeze(0)
             post_mat = logits.softmax(dim=-1)
+            pdb.set_trace()
             #step 3 compute and GOP
             key_list.append(row['id']) 
             gops_list.append([])

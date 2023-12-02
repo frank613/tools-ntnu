@@ -11,3 +11,9 @@ python gop_ali_free_giamp.py cmu.all.ctm ./models/ctc-en/ data/local/cmu/ fixed-
 
 
 python gop_diagnosis_plot.py ./cmu.all.ctm ./models//ctc-en/ ./data/local/cmu/train/ ./fixed-data-en/processor-en-ctc/
+
+cat /localhome/stipendiater/xinweic/git-repos/my-kaldi/egs/gop_speechocean762/s5/exp_20/ali_test/ali.phonemes.all.txt /localhome/stipendiater/xinweic/git-repos/my-kaldi/egs/gop_speechocean762/s5/exp_20/ali_train/ali.phonemes.all.txt > ali.oc762.phonemes.txt
+python gop_avg_posterior.py ./ali.oc762.phonemes.txt ./models/wav2vec2_phoneme_ce/ ./data/local/speechocean762/all fixed-data-en/processor/ ./out_oc762_avg_posterior.gop
+
+
+python gop_gv1_sp762.py ./models/ctc-en/ ./data/local/speechocean762/all fixed-data-en/processor-en-ctc/ ./oc762_gv1_fixed.gop

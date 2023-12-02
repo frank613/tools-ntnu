@@ -183,7 +183,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t]
                 else:
                     skip_prob = alphas[s-2,t-1,0] * params[1:,t]  
-                    skip_prob[seq[l] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
+                    skip_prob[seq[l-1] - 1] = 0   #need to remove the pos of the same label,because it's not allowed to skip for duplicated labels 
                     alphas[s,t,:] = (alphas[s,t-1,:] + alphas[s-1,t-1,0]) * params[1:,t] + skip_prob
          
 

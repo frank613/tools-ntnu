@@ -7,12 +7,18 @@ from concurrent.futures import ProcessPoolExecutor
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn import metrics
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import confusion_matrix
-from sklearn.preprocessing import minmax_scale,StandardScaler
 import re
+import matplotlib.pyplot as plt
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
 opt_SIL = 'SIL' ##can be different for different models
+poly_order = 2
+
+def round_score(score, floor=0.1, min_val=0, max_val=2):
+    score = np.maximum(np.minimum(max_val, score), min_val)
+    return np.round(score / floor) * floor
 
 def readGOP(gop_file, p_table):
     in_file = open(gop_file, 'r')
@@ -38,7 +44,7 @@ def readGOP(gop_file, p_table):
         if line == '':
             if not skip:
                 ## length in the gop file must the same as len(anno)
-                #assert( len(label_phoneme) == len(seq_score))
+                assert( len(label_phoneme) == len(seq_score))
                 if len(label_phoneme) != len(seq_score):
                     pdb.set_trace()
                     sys.exit()
@@ -82,14 +88,16 @@ def readList(file_path):
             uttlist.append(fields[0])
     return uttlist
 
-def train_model_for_phone(gops, labels):
-    model = LinearRegression()
+def train_model_single(gops, labels):
+    model = DecisionTreeClassifier(class_weight="balanced", max_depth=3)
+    #model = DecisionTreeClassifier(class_weight="balanced")
+    #model = DecisionTreeClassifier(max_depth=3)
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)
-    gops = PolynomialFeatures(2).fit_transform(gops)
-    gops, labels = balanced_sampling(gops, labels)
+    #gops = PolynomialFeatures(poly_order).fit_transform(gops)
+    #gops, labels = balanced_sampling(gops, labels)
     model.fit(gops, labels)
-    return model.coef_, model.intercept_
+    return model
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:
@@ -116,55 +124,34 @@ if __name__ == "__main__":
     if len(p_set) != 39:
         sys.exit("phoneme number is not 39, check the files")
 
-    ##normalization?
-    #pdb.set_trace()
-    #df["score"] = minmax_scale(df["score"])
-    #df["score"] = StandardScaler().fit_transform(df["score"].to_numpy().reshape(-1,1))
-
-
-
     ##training
     train_data_of = {}
-    for p in p_set:
-        records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["score","label"]] 
-        n_array = records.to_numpy()
-        scores, labels = n_array[:,0], n_array[:,1].astype(int)
-        train_data_of.setdefault(p,(scores,labels))
-
-
-    # Train polynomial regression
-    with ProcessPoolExecutor(10) as ex:
-        futures = [(p,ex.submit(train_model_for_phone, scores,labels)) for p, (scores,labels) in train_data_of.items()] 
-        model_of = {p: future.result() for p, future in futures} 
+    records = df.loc[df["isTrain"] == True, ["score","label"]] 
+    n_array = records.to_numpy()
+    scores, labels = n_array[:,0], n_array[:,1].astype(int)
+    r_model = train_model_single(scores,labels)
 
     # Evaluate
-    test_data_of = {}
-    for p in p_set:
-        records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["score","label"]]
-        n_array_eva = records_eva.to_numpy()
-        scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1].astype(int)
-        #scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1]
-        test_data_of.setdefault(p,(scores_eva,labels_eva))
+    records_eva = df.loc[df["isTrain"] == False, ["score","label"]]
+    n_array_eva = records_eva.to_numpy()
+    scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1].astype(int)
 
 
     all_results = np.empty((0,2))
-    for p,(gops_eva, ref) in test_data_of.items():
-        c, b = model_of[p]
-        hyp = b + c[0] + c[1] * gops_eva + c[2] * gops_eva * gops_eva
-        hyp = np.round(hyp)
-        print(np.unique(hyp,return_counts=True))
-        pdb.set_trace()
-        results = np.stack((ref, hyp), axis = 1)
-        all_results = np.concatenate((all_results,results))
+    model = r_model
+    hyp = model.predict(scores_eva.reshape(-1,1))
+    #hyp = np.round(hyp)
+    hyp = round_score(hyp)
+    all_results = np.stack((labels_eva, hyp), axis = 1)
 
 
     # summary
     print(f'MSE: {metrics.mean_squared_error(all_results[:,0], all_results[:,1]):.2f}')
     print(f'Corr: {np.corrcoef(all_results[:,0], all_results[:,1])[0][1]:.2f}')
-
-    #pdb.set_trace()
     print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
     print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+
+
 
         
 

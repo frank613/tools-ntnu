@@ -7,11 +7,17 @@ from concurrent.futures import ProcessPoolExecutor
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
 from sklearn import metrics
+from sklearn.metrics import confusion_matrix
 import re
+import matplotlib.pyplot as plt
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
 opt_SIL = 'SIL' ##can be different for different models
-poly_order = 1
+poly_order = 2
+
+def round_score(score, floor=0.1, min_val=0, max_val=2):
+    score = np.maximum(np.minimum(max_val, score), min_val)
+    return np.round(score / floor) * floor
 
 def readGOP(gop_file, p_table):
     in_file = open(gop_file, 'r')
@@ -81,14 +87,23 @@ def readList(file_path):
             uttlist.append(fields[0])
     return uttlist
 
-def train_model_for_phone(gops, labels):
+def train_model_for_phone(gops, labels, p):
+    #figure = plt.figure()
+    #axe = plt.gca()
+    #axe.scatter(gops,labels)
+    #label_ref = np.unique(labels).tolist()
+    #data = [ gops[labels == l] for l in label_ref] 
+    #axe.boxplot(data,  0, 'rs', 0, labels = label_ref)
+    #plt.savefig("./out-plot-gv1/" + f"{p}")
     model = LinearRegression()
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)
     gops = PolynomialFeatures(poly_order).fit_transform(gops)
-    gops, labels = balanced_sampling(gops, labels)
+    #gops, labels = balanced_sampling(gops, labels)
     model.fit(gops, labels)
     return model
+
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:
@@ -123,11 +138,14 @@ if __name__ == "__main__":
         scores, labels = n_array[:,0], n_array[:,1].astype(int)
         train_data_of.setdefault(p,(scores,labels))
 
-
+    model_of = {}
+    for p, (scores,labels) in train_data_of.items():
+        r_model = train_model_for_phone(scores,labels, p)
+        model_of.setdefault(p, r_model)
     # Train polynomial regression
-    with ProcessPoolExecutor(10) as ex:
-        futures = [(p,ex.submit(train_model_for_phone, scores,labels)) for p, (scores,labels) in train_data_of.items()] 
-        model_of = {p: future.result() for p, future in futures} 
+    #with ProcessPoolExecutor(10) as ex:
+    #    futures = [(p,ex.submit(train_model_for_phone, scores,labels, p)) for p, (scores,labels) in train_data_of.items()] 
+    #    model_of = {p: future.result() for p, future in futures} 
 
     # Evaluate
     test_data_of = {}
@@ -142,7 +160,10 @@ if __name__ == "__main__":
     for p,(gops_eva, ref) in test_data_of.items():
         gops_eva = PolynomialFeatures(poly_order).fit_transform(gops_eva.reshape(-1,1))
         model = model_of[p]
-        hyp = model.predict(gops_eva)
+        hyp = model.predict(gops_eva).reshape(-1)
+        #hyp = np.round(hyp)
+        hyp = round_score(hyp,1)
+        #print(np.unique(hyp, return_counts=True))
         results = np.stack((ref, hyp), axis = 1)
         all_results = np.concatenate((all_results,results))
 
@@ -150,9 +171,10 @@ if __name__ == "__main__":
     # summary
     print(f'MSE: {metrics.mean_squared_error(all_results[:,0], all_results[:,1]):.2f}')
     print(f'Corr: {np.corrcoef(all_results[:,0], all_results[:,1])[0][1]:.2f}')
+    print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+    print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
 
-    pdb.set_trace()
-    print(metrics.classification_report(all_results[:,0].astype(float), all_results[:,1]))
+
 
         
 

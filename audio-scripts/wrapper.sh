@@ -23,8 +23,8 @@ if [ $stage -le 1 ]; then
 	if [ ! -d $textgrid_out ]; then
 		mkdir -p $textgrid_out
 	fi
-	python splitAlignments.py $pctm $words_out
-	python splitAlignments.py $wctm $phones_out
+	python splitAlignments.py $wctm $words_out
+	python splitAlignments.py $pctm $phones_out
 
 	./add_header.sh $headr $words_out
 	./add_header.sh $headr $phones_out
