@@ -113,8 +113,8 @@ def train_model_for_phone_dt(gops, labels, p):
     #data = [ gops[labels == l] for l in label_ref] 
     #axe.boxplot(data,  0, 'rs', 0, labels = label_ref)
     #plt.savefig("./out-plot-gv1/" + f"{p}")
-    #model = DecisionTreeClassifier(class_weight="balanced", max_depth=3)
-    model = DecisionTreeClassifier(class_weight="balanced")
+    model = DecisionTreeClassifier(class_weight="balanced", max_depth=3)
+    #model = DecisionTreeClassifier(class_weight="balanced")
     #model = DecisionTreeClassifier(max_depth=3)
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)

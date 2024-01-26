@@ -43,7 +43,7 @@ def readGOP(gop_file, p_table):
         if line == '':
             if not skip:
                 ## length in the gop file must the same as len(anno)
-                assert( len(label_phoneme) == len(seq_score))
+                #assert( len(label_phoneme) == len(seq_score))
                 if len(label_phoneme) != len(seq_score):
                     pdb.set_trace()
                     sys.exit()
@@ -99,7 +99,7 @@ def train_model_for_phone(gops, labels, p):
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)
     gops = PolynomialFeatures(poly_order).fit_transform(gops)
-    #gops, labels = balanced_sampling(gops, labels)
+    gops, labels = balanced_sampling(gops, labels)
     model.fit(gops, labels)
     return model
 
