@@ -1,0 +1,1 @@
+python analyze_real_auc.py ./gops/cmu_gv3.gop_new uttid.temp label_mapped.txt ./cmu_gv3.json
