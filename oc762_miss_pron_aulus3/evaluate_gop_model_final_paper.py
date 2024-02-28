@@ -9,7 +9,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn import metrics
 from sklearn.metrics import confusion_matrix
 import re
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from scipy import stats
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
@@ -100,7 +100,7 @@ def train_model_for_phone(gops, labels, p):
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)
     gops = PolynomialFeatures(poly_order).fit_transform(gops)
-    gops, labels = balanced_sampling(gops, labels)
+    #gops, labels = balanced_sampling(gops, labels)
     model.fit(gops, labels)
     return model
 
@@ -175,7 +175,7 @@ if __name__ == "__main__":
     res = stats.pearsonr(all_results[:,0], all_results[:,1])
     res_tuple = res.confidence_interval(confidence_level=0.95)
     low, high = res_tuple.low, res_tuple.high
-    print(f'Corr-v2: {res.statistic:.2f}, low={low:.2f}, high={high:.2f}')
+    print(f'Corr-v2: {res.statistic:.5f}, low={low:.5f}, high={high:.5f}')
     print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
     print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
 

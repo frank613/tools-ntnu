@@ -14,7 +14,6 @@ import random
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
 opt_SIL = 'SIL' ##can be different for different models
-poly_order = 1
 
 def add_more_negative_data(data):
     # Put all examples together

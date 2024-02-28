@@ -2,19 +2,45 @@ import sys
 import pdb
 import numpy as np
 import pandas as pd
-from utils import balanced_sampling
 from concurrent.futures import ProcessPoolExecutor
 from sklearn.preprocessing import PolynomialFeatures
+from sklearn.svm import SVR
 from sklearn.linear_model import LinearRegression
 from sklearn import metrics
 from sklearn.metrics import confusion_matrix
-from sklearn.preprocessing import minmax_scale,StandardScaler
+from collections import Counter
 import re
+import random
+from scipy import stats
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
 opt_SIL = 'SIL' ##can be different for different models
 
-def readGOP(gop_file, p_table):
+def add_more_negative_data(data):
+    # Put all examples together
+    whole_data = []
+    for ph in data:
+        for feats,label in zip(*data[ph]):
+            whole_data.append((ph,feats,label))
+
+    # Take the 2-score examples of other phones as the negative examples
+    for cur_ph in data:
+        feats, labels = data[cur_ph]
+        count_of_label = Counter(labels)
+        example_number_needed = 2 * count_of_label[2] - len(labels)
+        if example_number_needed > 0:
+            features = random.sample([feats for ph, feats, label in whole_data
+                                      if ph != cur_ph and label == 2],
+                                     example_number_needed)
+            data[cur_ph][0] = data[cur_ph][0] + features
+            data[cur_ph][1] = data[cur_ph][1] + [0] * example_number_needed
+    return data
+
+def round_score(score, floor=0.1, min_val=0, max_val=2):
+    score = np.maximum(np.minimum(max_val, score), min_val)
+    return np.round(score / floor) * floor
+
+def readGOP_feats(gop_file, p_table):
     in_file = open(gop_file, 'r')
     isNewUtt = True
     skip = False
@@ -38,7 +64,7 @@ def readGOP(gop_file, p_table):
         if line == '':
             if not skip:
                 ## length in the gop file must the same as len(anno)
-                #assert( len(label_phoneme) == len(seq_score))
+                assert( len(label_phoneme) == len(seq_score))
                 if len(label_phoneme) != len(seq_score):
                     pdb.set_trace()
                     sys.exit()
@@ -54,7 +80,7 @@ def readGOP(gop_file, p_table):
             cur_phoneme = cur_match.group(1)
         else:
             sys.exit("non legal phoneme found in the gop file")
-        cur_score = float(fields[2])
+        cur_score = [float(x) for x in fields[2].split(',')]
         ####optional silence
         if cur_phoneme != opt_SIL:
             seq_score.append((cur_phoneme, cur_score))
@@ -82,22 +108,19 @@ def readList(file_path):
             uttlist.append(fields[0])
     return uttlist
 
-def train_model_for_phone(gops, labels):
-    model = LinearRegression()
-    labels = labels.reshape(-1, 1)
-    gops = gops.reshape(-1, 1)
-    gops = PolynomialFeatures(2).fit_transform(gops)
-    gops, labels = balanced_sampling(gops, labels)
-    model.fit(gops, labels)
-    return model.coef_, model.intercept_
+def train_model_for_phone(feats, labels):
+    model = SVR()
+    labels = labels.ravel()
+    model.fit(feats, labels)
+    return model
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <GOP file> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a polynomial regression model, predict the test set, outputs a summary ")
+        sys.exit("this script takes 4 arguments <GOP-feats file> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a SVR model, predict the test set, outputs a summary ")
 
     #readfiles
     p_dict = read_anno(sys.argv[2])
-    data_list = readGOP(sys.argv[1], p_dict)
+    data_list = readGOP_feats(sys.argv[1], p_dict)
     train_list = readList(sys.argv[3])
     test_list = readList(sys.argv[4])
     
@@ -111,49 +134,44 @@ if __name__ == "__main__":
             sys.exit("found uttid not in train nor test")
         for itm in item[1]:
             gop_table.append(list(itm) + [item[0], isTrain])
-    df = pd.DataFrame(gop_table, columns=('phoneme','score','label','uttid', "isTrain"))
+    df = pd.DataFrame(gop_table, columns=('phoneme','feats','label','uttid', "isTrain"))
     p_set = df['phoneme'].unique()
     if len(p_set) != 39:
         sys.exit("phoneme number is not 39, check the files")
 
-    ##normalization?
-    #pdb.set_trace()
-    #df["score"] = minmax_scale(df["score"])
-    #df["score"] = StandardScaler().fit_transform(df["score"].to_numpy().reshape(-1,1))
-
-
-
     ##training
     train_data_of = {}
     for p in p_set:
-        records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["score","label"]] 
-        n_array = records.to_numpy()
-        scores, labels = n_array[:,0], n_array[:,1].astype(int)
-        train_data_of.setdefault(p,(scores,labels))
+        records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["feats","label"]] 
+        feats = records["feats"].tolist()
+        feats = [feat[::2] for feat in feats]
+        labels = records["label"].tolist()
+        train_data_of.setdefault(p,[feats,labels])
+
+    # Make the dataset more blance
+    train_data_of = add_more_negative_data(train_data_of)
 
 
     # Train polynomial regression
     with ProcessPoolExecutor(10) as ex:
-        futures = [(p,ex.submit(train_model_for_phone, scores,labels)) for p, (scores,labels) in train_data_of.items()] 
+        futures = [(p,ex.submit(train_model_for_phone, np.array(feats),np.array(labels))) for p, (feats,labels) in train_data_of.items()] 
         model_of = {p: future.result() for p, future in futures} 
 
     # Evaluate
     test_data_of = {}
     for p in p_set:
-        records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["score","label"]]
-        n_array_eva = records_eva.to_numpy()
-        scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1].astype(int)
-        #scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1]
-        test_data_of.setdefault(p,(scores_eva,labels_eva))
+        records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["feats","label"]]
+        feats_eva = np.array(records_eva["feats"].tolist())
+        feats_eva = feats_eva[:,::2]
+        labels_eva = np.array(records_eva["label"].tolist())
+        test_data_of.setdefault(p,(feats_eva,labels_eva))
 
 
     all_results = np.empty((0,2))
-    for p,(gops_eva, ref) in test_data_of.items():
-        c, b = model_of[p]
-        hyp = b + c[0] + c[1] * gops_eva + c[2] * gops_eva * gops_eva
-        hyp = np.round(hyp)
-        print(np.unique(hyp,return_counts=True))
-        #pdb.set_trace()
+    for p,(feats_eva, ref) in test_data_of.items():
+        model = model_of[p]
+        hyp = model.predict(feats_eva)
+        hyp = round_score(hyp,1)
         results = np.stack((ref, hyp), axis = 1)
         all_results = np.concatenate((all_results,results))
 
@@ -161,8 +179,11 @@ if __name__ == "__main__":
     # summary
     print(f'MSE: {metrics.mean_squared_error(all_results[:,0], all_results[:,1]):.2f}')
     print(f'Corr: {np.corrcoef(all_results[:,0], all_results[:,1])[0][1]:.2f}')
+    res = stats.pearsonr(all_results[:,0], all_results[:,1])
+    res_tuple = res.confidence_interval(confidence_level=0.95)
+    low, high = res_tuple.low, res_tuple.high
+    print(f'Corr-v2: {res.statistic:.4f}, low={low:.4f}, high={high:.4f}')
 
-    #pdb.set_trace()
     print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
     print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
 

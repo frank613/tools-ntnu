@@ -1,1 +1,1 @@
-/localhome/stipendiater/xinweic/git-repos/my-kaldi/egs/gop_speechocean762/s5/local/utils.py
+/home/xinweic/kaldi/my-kaldi/egs/gop_speechocean762/s5/local/utils.py
