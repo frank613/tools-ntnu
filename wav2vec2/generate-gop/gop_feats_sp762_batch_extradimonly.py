@@ -184,8 +184,8 @@ def single_process(example, p_tokenizer, processor, model, out_path):
 
         #step 2, compute the GOP
         pids = labels.tolist()
-        gop_feats = [log_like_total]
         for i,pid in enumerate(pids):
+            gop_feats = [log_like_total]
             new_labels = labels.clone().detach()
             new_labels = torch.cat([new_labels[:i], new_labels[i+1:]])
             ctc = ctc_loss(post_mat.transpose(0,1), new_labels, blank=0)
