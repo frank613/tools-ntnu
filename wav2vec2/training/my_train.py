@@ -7,6 +7,9 @@ from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, AutoCon
 from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC, TrainingArguments, Trainer
 from pathlib import Path
 import pandas as pd
+from custom_tokenizers import My_Wav2Vec2CTCTokenizer
+
+
 
 
 datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
@@ -125,13 +128,10 @@ def load_dataset_local_from_dict(folder_path,tran_map, uttid_list):
 def prepare_dataset(batch):
     batch["input_values"] = processor(audio=batch["speech"], sampling_rate=16000).input_values[0]
     batch["input_length"] = len(batch["input_values"])  
-    ##manully split into words(phonemes) so that we don't need word delimeter
-    #text_batch = batch["p_text"].split(" ")
-    pdb.set_trace()
-    #processor.tokenizer.tokenize(text=batch["p_text"])
-    #processor.tokenizer.tokenize(text=text_batch, is_split_into_words= True)
-    processor.tokenizer.tokenize(text=batch["p_text"], is_split_into_words= True)
-    batch["labels"] = processor(text = text_batch, is_split_into_words= True).input_ids
+    ##manully split into words(phonemes) so that we don't need to tokenize with word delimeter
+    token_batch = batch["p_text"].split(" ")
+    #id_batch =processor.tokenizer.convert_tokens_to_ids(token_batch)
+    batch["labels"] = processor(text = token_batch, is_split_into_words= True).input_ids
     return batch
 
 if __name__ == "__main__":
@@ -173,11 +173,13 @@ if __name__ == "__main__":
     #config = AutoConfig.from_pretrained(model_path)
     #tokenizer_type = config.model_type if config.tokenizer_class is None else None
     #config = config if config.tokenizer_class is not None else None
-    tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
-        "./",
+    tokenizer = My_Wav2Vec2CTCTokenizer(
+        "./vocab.json",
         unk_token=None,
         pad_token="<pad>",
-        word_delimiter_token=None
+        word_delimiter_token=None,
+        bos_token=None,
+        eos_token=None
     )
 
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
