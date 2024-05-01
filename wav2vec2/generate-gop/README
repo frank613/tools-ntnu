@@ -17,3 +17,5 @@ python gop_avg_posterior.py ./ali.oc762.phonemes.txt ./models/wav2vec2_phoneme_c
 
 
 python gop_gv1_sp762.py ./models/ctc-en/ ./data/local/speechocean762/all fixed-data-en/processor-en-ctc/ ./oc762_gv1_fixed.gop
+
+python dump_ctc_logits_my_model.py ./transcriptions/cmu_ali.txt ../training/out-models/ctc-large/checkpoint-500  ~/data/data-for-w2v2/cmu-kids/metadata.csv ../training/out-models/ctc-large/processor_config/ ./out.json

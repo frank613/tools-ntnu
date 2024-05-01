@@ -12,8 +12,11 @@ import torch
 from pathlib import Path
 import pdb
 
-datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
-datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
+
+ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
+ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
+datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
+datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
@@ -50,12 +53,14 @@ def read_trans(trans_path):
     return trans_map 
 
 
-def load_dataset_local_from_dict(folder_path):
+def load_dataset_local_from_dict(csv_path):
     datadict = {"audio": []}  
-    with open(folder_path + '/metadata.csv') as csvfile:
+    #with open(folder_path + '/metadata.csv') as csvfile:
+    with open(csv_path) as csvfile:
         next(csvfile)
         for row in csvfile:
-            datadict["audio"].append(folder_path + '/' + row.split(',')[0])
+            #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
+            datadict["audio"].append(row.split(',')[0])
     ds = datasets.Dataset.from_dict(datadict) 
     ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
     #get the array for single row
@@ -69,10 +74,9 @@ def load_dataset_local_from_dict(folder_path):
             else:
                 batch["p_text"].append(tran_map[uid])
         return batch
-
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    #ds_filtered = ds_map
+    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=3)
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
 
     return ds_filtered
 

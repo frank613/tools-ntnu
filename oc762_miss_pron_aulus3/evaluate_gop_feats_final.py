@@ -145,6 +145,10 @@ if __name__ == "__main__":
         records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["feats","label"]] 
         feats = records["feats"].tolist()
         feats = [feat[::2] for feat in feats]
+        #feats = [feat[:-2:2] + feat[-2:] for feat in feats]
+        #feats = np.array(feats)
+        #feats[feats==0] = -1
+        #feats = feats.tolist()
         labels = records["label"].tolist()
         train_data_of.setdefault(p,[feats,labels])
 
@@ -163,6 +167,8 @@ if __name__ == "__main__":
         records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["feats","label"]]
         feats_eva = np.array(records_eva["feats"].tolist())
         feats_eva = feats_eva[:,::2]
+        #feats[feats==0] = -1
+        #feats_eva = np.concatenate((feats_eva[:,:-2:2], feats_eva[:,-2:]),axis=1)
         labels_eva = np.array(records_eva["label"].tolist())
         test_data_of.setdefault(p,(feats_eva,labels_eva))
 

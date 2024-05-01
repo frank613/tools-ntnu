@@ -1,0 +1,1 @@
+python gop_ali_free_giamp_v5.py ./transcriptions/cmu.ctm /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/checkpoint-1250 data-new/data-for-w2v2/cmu-kids/metadata.csv /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/processor_config_gop/ ./cmu_gv5_enCTC.gop

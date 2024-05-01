@@ -1,25 +1,27 @@
 import os,sys,pdb,re,json
 import torch
 import datasets
+import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2FeatureExtractor, AutoConfig, AutoTokenizer, AutoFeatureExtractor
 from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC, TrainingArguments, Trainer
 from pathlib import Path
 import pandas as pd
-from custom_tokenizers import My_Wav2Vec2CTCTokenizer
+from my_w2v2_package.custom_processor import My_Wav2Vec2CTCTokenizer,My_Wav2Vec2Processor
 
 
 
-
-datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
-datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
+ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
+ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
+datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
+datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
 #RE for filenames
-re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
+re_uttid = re.compile(r'(.*/)*(.*)\.(.*$)')
 
 @dataclass
 class DataCollatorCTCWithPadding:
@@ -47,7 +49,7 @@ class DataCollatorCTCWithPadding:
             7.5 (Volta).
     """
 
-    processor: Wav2Vec2Processor
+    processor: My_Wav2Vec2Processor
     padding: Union[bool, str] = True
     max_length: Optional[int] = None
     max_length_labels: Optional[int] = None
@@ -104,9 +106,15 @@ def extract_all_phonemes(batch):
     vocab = list(set(all_phonemes.split(" ")))
     return {"vocab": [vocab], "all_text": [all_phonemes]}
 
-def load_dataset_local_from_dict(folder_path,tran_map, uttid_list):
-    audio_df = pd.read_csv(folder_path)
-    ds = datasets.Dataset.from_dict({"audio": audio_df['file_name'].values}).cast_column("audio", datasets.Audio(sampling_rate=16000))
+def load_dataset_local_from_dict(csv_path, cache_additional, tran_map, uttid_list):
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        audio_df = pd.read_csv(csv_path)
+        ds = datasets.Dataset.from_dict({"audio": audio_df['file_name'].values}).cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ##trick for using the automatic cache for "from_dict"
+    #ds = datasets.Dataset.from_file(cache_full_path)   
+    ds = datasets.Dataset.load_from_disk(cache_full_path) 
     #get the array for single row
     def map_to_array(batch):
         batch["speech"] = [ item["array"] for item in batch["audio"]] 
@@ -119,9 +127,9 @@ def load_dataset_local_from_dict(folder_path,tran_map, uttid_list):
                 batch["p_text"].append(" ".join(tran_map[uid]))
         return batch
 
-    ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100)
-    #ds_filtered = ds_map
+    ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100, num_proc=3)
+    #ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
+    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=3)
     return ds_filtered
 
 ##we don't pad, so process one entry at a time
@@ -133,6 +141,56 @@ def prepare_dataset(batch):
     #id_batch =processor.tokenizer.convert_tokens_to_ids(token_batch)
     batch["labels"] = processor(text = token_batch, is_split_into_words= True).input_ids
     return batch
+## batched?
+def prepare_dataset_batch(batch):
+    batch["input_values"] = processor(audio=batch["speech"], sampling_rate=16000).input_values
+    #batch["input_length"] = len(batch["input_values"])  
+    ##manully split into words(phonemes) so that we don't need to tokenize with word delimeter
+    token_batch = [item.split(" ") for item in batch["p_text"]]
+    #id_batch =processor.tokenizer.convert_tokens_to_ids(token_batch)
+    batch["labels"] = processor(text = token_batch, is_split_into_words= True).input_ids
+    return batch
+
+
+##CTC-loss?
+wer_metric = datasets.load_metric("wer")
+def compute_metrics(pred):
+    def remove_special_character(alist):
+        result = ' '.join(element for element in alist if element != 'SIL' and element != 'SPN' and element != '<unk>' and element != '<s>' and  element != '</s>')
+        #result = re.sub('R OW W AA N D AH', '', result)
+        return result
+    def group_phones(batch_str):
+        batch_list_1 = batch_str["text"].split(' ')
+        L_1 = len(batch_list_1)
+        ref = batch_list_1[0]
+        new_list_1 = []
+        new_list_1.append(ref)
+        for i in range(L_1):
+            if batch_list_1[i] != ref:
+                ref = batch_list_1[i]
+                new_list_1.append(ref)
+        return remove_special_character(new_list_1)
+    pred_logits = pred.predictions
+    pred_ids = np.argmax(pred_logits, axis=-1)
+
+    pred.label_ids[pred.label_ids == -100] = processor.tokenizer.pad_token_id
+
+    #pred_str = ' '.join([processor.tokenizer._convert_id_to_token(k) for k in pred_ids])
+    # we do not want to group tokens when computing the metrics
+    pred_strs = processor.tokenizer.batch_decode(pred_ids, group_tokens=False)
+    pred_list = []
+    for pred_str in pred_strs:
+        pred_list.append(group_phones(pred_str))
+
+    label_strs = processor.tokenizer.batch_decode(pred.label_ids, group_tokens=False)
+
+    label_list = []
+    for label_str in label_strs:
+        label_list.append(label_str["text"])
+
+    wer = wer_metric.compute(predictions=pred_list, references=label_list)
+
+    return {"wer": wer}
 
 if __name__ == "__main__":
 
@@ -146,14 +204,16 @@ if __name__ == "__main__":
     model_path = sys.argv[3]
     csv_path_train = sys.argv[4]
     csv_path_dev = sys.argv[5]
+    out_path = sys.argv[6]
     #step 1, load the dataset
     tran_map_train = read_trans(tran_path_train)
     tran_map_dev = read_trans(tran_path_dev)
     uttid_list_train = tran_map_train.keys()
     uttid_list_dev = tran_map_dev.keys()  
     
-    #train_ds = load_dataset_local_from_dict(csv_path_train,tran_map_train, uttid_list_train)
-    dev_ds = load_dataset_local_from_dict(csv_path_dev,tran_map_dev, uttid_list_dev)
+    train_ds = load_dataset_local_from_dict(csv_path_train, "train", tran_map_train, uttid_list_train)
+    #train_ds = load_dataset_local_from_dict(csv_path_dev,tran_map_dev, uttid_list_dev)
+    dev_ds = load_dataset_local_from_dict(csv_path_dev, "dev", tran_map_dev, uttid_list_dev)
     
     #step 2, define the processor, the feature extractor can be directly loaded 
     #Howeverm the ctc-tokenizer needs to be created
@@ -161,10 +221,10 @@ if __name__ == "__main__":
 
     #vocabs = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True,  
     #        remove_columns=train_ds.column_names["train"])
-    #vocabs_train = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True)
+    vocabs_train = train_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
     vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
-    #vocab_list = list(set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0]))
-    vocab_list = list(set(vocabs_dev["vocab"][0]))
+    vocab_list = list(set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0]))
+    #vocab_list = list(set(vocabs_dev["vocab"][0]))
     vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)}
     vocab_dict["<pad>"] = 0
     with open('./vocab.json', 'w') as vocab_file:
@@ -182,10 +242,53 @@ if __name__ == "__main__":
         eos_token=None
     )
 
-    processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    processor = My_Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    out_pre_path = out_path + "/processor_config"
+    if not os.path.exists(out_pre_path):
+        processor.save_pretrained(out_pre_path)
+
     #step 3, prepare the trainig data, we don't pad here, so disable batch
-    #train_ds = train_ds.map(prepare_dataset, batched=True, batch_size=100)
-    dev_ds = dev_ds.map(prepare_dataset, num_proc=1)
+    #train_ds = train_ds.map(prepare_dataset, num_proc=10)
+    train_ds = train_ds.map(prepare_dataset_batch, batched=True, batch_size=100, num_proc=3)
+    dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
     #step 4, fine-tune the model, the datacollator does the padding.
-    pdb.set_trace()
+    model = Wav2Vec2ForCTC.from_pretrained(
+        model_path, 
+        ctc_loss_reduction="mean", 
+        pad_token_id=processor.tokenizer.pad_token_id,
+        vocab_size=len(vocab_list)
+    )
+    data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+    model.freeze_feature_extractor()
+    
+    training_args = TrainingArguments(
+        output_dir=out_path,
+        group_by_length=False,
+        per_device_train_batch_size=16,
+        gradient_accumulation_steps=2,
+        evaluation_strategy="steps",
+        num_train_epochs=10,
+        gradient_checkpointing=True,
+        save_steps=500,
+        eval_steps=500,
+        logging_steps=500,
+        learning_rate=1e-4,
+        weight_decay=0.005,
+        warmup_steps=1000,
+        fp16=True,
+        seed=1
+    )
+    
+    trainer = Trainer(
+        model=model,
+        data_collator=data_collator,
+        args=training_args,
+        compute_metrics=None,
+        train_dataset=train_ds,
+        eval_dataset=dev_ds,
+    )
+    
+    #pdb.set_trace()
+    trainer.train()
+    print("done")
 

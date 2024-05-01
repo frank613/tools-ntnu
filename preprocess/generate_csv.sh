@@ -5,7 +5,7 @@ output_file=$2
 header="file_name,transcription"
 
 echo $header > $output_file
-files=$(find ${main_dir} -name "*.flac")
+files=$(find -L ${main_dir} -type f -name "*.flac")
 for file in ${files[*]}
      do
 	     echo "$(readlink -e ${file}),Null" >> $output_file

@@ -7,16 +7,17 @@ import json
 import pandas as pd
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 import datasets
-from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2ForCTC
+from transformers.models.wav2vec2 import Wav2Vec2ForCTC
+from my_w2v2_package.custom_processor import My_Wav2Vec2Processor
 import torch
 from pathlib import Path
 import pdb
 import json
 
-
-
-datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
-datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
+ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
+ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
+datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
+datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 
@@ -89,8 +90,10 @@ def read_align(align_path):
     return pd.DataFrame(utt_list, columns=('uttid','phonemes')) 
 
 
-def load_dataset_local_from_dict(csv_path):
-    datadict = {"audio": []}  
+def load_dataset_local_from_dict(csv_path, cache_additional):
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        datadict = {"audio": []}  
     with open(csv_path) as csvfile:
         next(csvfile)
         for row in csvfile:
@@ -130,8 +133,8 @@ def get_ali_pointers(post_mat, p_seq, blank=0):
 
 
     # alphas stores best posterior for the current s at t
-    alphas= torch.zeros((L,T))
-    pointers = torch.zeros((L,T+1))
+    alphas= torch.zeros((L,T)).type(torch.float64)
+    pointers = torch.zeros((L,T+1)).type(torch.float64)
 
     # Initialize, not that the first SIL and last SIL is not optional in CE
     alphas[0,0] = post_mat[blank,0] 
@@ -187,7 +190,6 @@ def get_ali_pointers(post_mat, p_seq, blank=0):
     else:
         pointers[0,T] = L-1
        
-    pdb.set_trace()
     return pointers
 
     
@@ -221,8 +223,7 @@ if __name__ == "__main__":
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
  
-    processor = Wav2Vec2Processor.from_pretrained(prep_path)
-    p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
+    processor = My_Wav2Vec2Processor.from_pretrained(prep_path) 
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
 
@@ -247,25 +248,25 @@ if __name__ == "__main__":
         #step 1, authentic segmentation based on human annotation/ alignments from GMM-mono (pid_seq = list of (pid, start_idx, end_idx)
         ali_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
         segmented, raw_seq = seg_to_token_seq(ali_seq)
-        segmented = [(p,p_tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
+        segmented = [(p, processor.tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
         json_dict.update([("align-seq", segmented)])
         #step 2 get the posterior matrix:
         input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
         logits = model(input_values)["logits"].squeeze(0)
-        post_mat = logits.softmax(dim=-1)
+        post_mat = logits.softmax(dim=-1).type(torch.float64)
         json_dict.update([("post_mat", post_mat.tolist())])
         ##simulated insertion
         #raw_seq.pop(2)
         ##simulated deletion
-        raw_seq.insert(3, "P")
-        pid_seq = p_tokenizer.convert_tokens_to_ids(raw_seq)
+        #raw_seq.insert(3, "P")
+        pid_seq = processor.tokenizer.convert_tokens_to_ids(raw_seq)
         ##run viterbi
         pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)
         path_int = get_backtrace_path(pointers)
         path_int.reverse()
         path_int = path_int[1:]
         path_str = [ raw_seq[int((s-1)/2)] if s%2!=0 else '<pad>' for s in path_int]
-        path_pid = p_tokenizer.convert_tokens_to_ids(path_str)
+        path_pid = processor.tokenizer.convert_tokens_to_ids(path_str)
         json_dict.update([("path_str", path_str)])
         json_dict.update([("path_pid", path_pid)])
         with open(sys.argv[5], 'w') as f:
