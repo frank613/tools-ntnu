@@ -130,7 +130,7 @@ def get_ali_pointers(post_mat, p_seq, blank=0):
 
 
     # alphas stores best posterior for the current s at t
-    alphas= torch.zeros((L,T))
+    alphas= torch.zeros((L,T)).double()
     pointers = torch.zeros((L,T+1))
 
     # Initialize, not that the first SIL and last SIL is not optional in CE
@@ -236,40 +236,40 @@ if __name__ == "__main__":
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  
         for row in ds:
-                count += 1
-                if count > 0:
-                    break
-                if row['id'] not in uttid_list:
-                    print("ignore uttid: " + row['id'] + ", no alignment can be found")
-                    continue
-        print("processing {0}".format(row['id']))
-        json_dict.update([("uid",row['id'])])
-        #step 1, authentic segmentation based on human annotation/ alignments from GMM-mono (pid_seq = list of (pid, start_idx, end_idx)
-        ali_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
-        segmented, raw_seq = seg_to_token_seq(ali_seq)
-        segmented = [(p,p_tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
-        json_dict.update([("align-seq", segmented)])
-        #step 2 get the posterior matrix:
-        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-        logits = model(input_values)["logits"].squeeze(0)
-        post_mat = logits.softmax(dim=-1)
-        json_dict.update([("post_mat", post_mat.tolist())])
-        ##simulated insertion
-        #raw_seq.pop(2)
-        ##simulated deletion
-        raw_seq.insert(3, "P")
-        pid_seq = p_tokenizer.convert_tokens_to_ids(raw_seq)
-        ##run viterbi
-        pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)
-        path_int = get_backtrace_path(pointers)
-        path_int.reverse()
-        path_int = path_int[1:]
-        path_str = [ raw_seq[int((s-1)/2)] if s%2!=0 else '<pad>' for s in path_int]
-        path_pid = p_tokenizer.convert_tokens_to_ids(path_str)
-        json_dict.update([("path_str", path_str)])
-        json_dict.update([("path_pid", path_pid)])
-        with open(sys.argv[5], 'w') as f:
-            json.dump(json_dict,f)
+            count += 1
+            if count > 0:
+                break
+            if row['id'] not in uttid_list:
+                print("ignore uttid: " + row['id'] + ", no alignment can be found")
+                continue
+            print("processing {0}".format(row['id']))
+            json_dict.update([("uid",row['id'])])
+            #step 1, authentic segmentation based on human annotation/ alignments from GMM-mono (pid_seq = list of (pid, start_idx, end_idx)
+            ali_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
+            segmented, raw_seq = seg_to_token_seq(ali_seq)
+            segmented = [(p,p_tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
+            json_dict.update([("align-seq", segmented)])
+            #step 2 get the posterior matrix:
+            input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+            logits = model(input_values)["logits"].squeeze(0)
+            post_mat = logits.softmax(dim=-1)
+            json_dict.update([("post_mat", post_mat.tolist())])
+            ##simulated insertion
+            #raw_seq.pop(2)
+            ##simulated deletion
+            raw_seq.insert(3, "P")
+            pid_seq = p_tokenizer.convert_tokens_to_ids(raw_seq)
+            ##run viterbi
+            pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)
+            path_int = get_backtrace_path(pointers)
+            path_int.reverse()
+            path_int = path_int[1:]
+            path_str = [ raw_seq[int((s-1)/2)] if s%2!=0 else '<pad>' for s in path_int]
+            path_pid = p_tokenizer.convert_tokens_to_ids(path_str)
+            json_dict.update([("path_str", path_str)])
+            json_dict.update([("path_pid", path_pid)])
+            with open(sys.argv[5], 'w') as f:
+                json.dump(json_dict,f)
        
 
 

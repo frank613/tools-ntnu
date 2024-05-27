@@ -225,16 +225,17 @@ if __name__ == "__main__":
     vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
     vocab_list = list(set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0]))
     #vocab_list = list(set(vocabs_dev["vocab"][0]))
+    vocab_list = sorted(vocab_list)
     vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)}
     vocab_dict["<pad>"] = 0
-    with open('./vocab.json', 'w') as vocab_file:
+    with open(out_path + '/vocab.json', 'w') as vocab_file:
         json.dump(vocab_dict, vocab_file)
     #tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     #config = AutoConfig.from_pretrained(model_path)
     #tokenizer_type = config.model_type if config.tokenizer_class is None else None
     #config = config if config.tokenizer_class is not None else None
     tokenizer = My_Wav2Vec2CTCTokenizer(
-        "./vocab.json",
+        out_path + "/vocab.json",
         unk_token=None,
         pad_token="<pad>",
         word_delimiter_token=None,
@@ -248,15 +249,16 @@ if __name__ == "__main__":
         processor.save_pretrained(out_pre_path)
 
     #step 3, prepare the trainig data, we don't pad here, so disable batch
-    #train_ds = train_ds.map(prepare_dataset, num_proc=10)
-    train_ds = train_ds.map(prepare_dataset_batch, batched=True, batch_size=100, num_proc=3)
-    dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
+    train_ds = train_ds.map(prepare_dataset, num_proc=10)
+    #train_ds = train_ds.map(prepare_dataset_batch, batched=True, batch_size=100, num_proc=3)
+    dev_ds = dev_ds.map(prepare_dataset, num_proc=10)
+    #dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
     #step 4, fine-tune the model, the datacollator does the padding.
     model = Wav2Vec2ForCTC.from_pretrained(
         model_path, 
         ctc_loss_reduction="mean", 
         pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(vocab_list)
+        vocab_size=len(vocab_dict)
     )
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     model.freeze_feature_extractor()
@@ -269,7 +271,7 @@ if __name__ == "__main__":
         evaluation_strategy="steps",
         num_train_epochs=10,
         gradient_checkpointing=True,
-        save_steps=500,
+        save_steps=50,
         eval_steps=500,
         logging_steps=500,
         learning_rate=1e-4,

@@ -20,7 +20,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
 datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
-spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+#spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+blank_token = "<pad>"
 sil_tokens = set(["sil","SIL","SPN"])
 
 #RE for Teflon files
@@ -29,17 +30,21 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
-##segmentation, new phonemes are annotated as "_N"
+##segmentation, new phonemes are annotated as "_#", also adding p_raw to recover the non-ctc sequence
 def seg_to_token_seq(p_tokenizer,p_seq):
     segmented = [] #list of pair (pid, start_idx, end_idx) end_idx overlaps the start_idx of the next phoneme
-    temp,idx_start = '', 0
+    pid,idx_start,p_raw = '', 0, ''
     for i,p in enumerate(p_seq):
         if p.endswith('_#'):
-            pid = p_tokenizer._convert_token_to_id(p.strip("_#"))
-            segmented.append([temp, idx_start, i])
-            temp = pid
+            segmented.append([pid, idx_start, i, p_raw])
+            ## change silence to blank for ctc-based activations
+            p_raw = p.strip("_#")
+            if p_raw in sil_tokens:
+                pid = p_tokenizer._convert_token_to_id(blank_token)
+            else:
+                pid = p_tokenizer._convert_token_to_id(p_raw)
             idx_start = i
-    segmented.append([temp, idx_start, i+1])
+    segmented.append([pid, idx_start, i+1, p_raw])
     segmented = segmented[1:]
     return segmented
 
@@ -176,10 +181,10 @@ if __name__ == "__main__":
             #step 3 compute and GOP
             key_list.append(row['id']) 
             gops_list.append([])
-            for order, (pid,start_idx, end_idx) in enumerate(pid_seq):
+            for order, (pid,start_idx, end_idx, p_raw) in enumerate(pid_seq):
                 length_seg = end_idx - start_idx
                 post_avg = post_mat[start_idx:end_idx][:,pid].mean()
-                gops_list[len(key_list)-1].append((p_tokenizer._convert_id_to_token(pid), post_avg))   
+                gops_list[len(key_list)-1].append((p_raw, post_avg))   
        
 
     print("done with GOP computation")

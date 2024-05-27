@@ -1,7 +1,7 @@
 import sys
 import re
 import pandas as pd
-sys.path.append('/home/stipendiater/xinweic/tools/edit-distance')
+sys.path.append('/home/xinweic/tools-ntnu/edit-distance')
 import edit 
 import pdb
 import numpy as np
@@ -10,7 +10,7 @@ import json
 import os
 
 
-re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
+re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*|<pad>')
 #store all the sub pairs
 #for each phone in the GOP file:
     #label "S" if it's a substitution error based on the other input files.
@@ -49,14 +49,13 @@ def labelError(GOP_file, error_list, tran_file):
         tran_seq = tran_df_filtered.tolist()[0] #[0] converts 2d list to 1d
         dist, labels = edit.edit_dist(cano_seq, tran_seq)
         sub_list += edit.get_sub_pair_list(cano_seq, tran_seq, labels)
-        if dist == 0:
-            continue
-        if uttid in error_list:
+        if dist == 0 or uttid not in error_list:
+            labels_resized = ['C'] * len(labels)
+        else:
             labels_resized = [ label for idx, label in enumerate(labels) if label != 'I']
             if len(labels_resized) != len(cano_seq):
                 sys.exit("length of edit distance not maching the gop")
-        else:
-            labels_resized = ['C'] * len(labels)
+
         extended += [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(row['seq-score']) ]
     df = pd.concat([df, pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid'])])
     #json

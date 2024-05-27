@@ -29,6 +29,9 @@ noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
+#RE for CMU-kids
+re_uttid_raw = re.compile(r'(.*)\.(.*$)')
+
 ##segmentation, new phonemes are annotated as "_#", also return raw phoneme seq without SPN and SIL
 def seg_to_token_seq(p_seq):
     segmented = [] #list of pair (pid, start_idx, end_idx) end_idx overlaps the start_idx of the next phoneme
@@ -94,17 +97,19 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
     if not os.path.exists(cache_full_path):
         datadict = {"audio": []}  
-    with open(csv_path) as csvfile:
-        next(csvfile)
-        for row in csvfile:
-            datadict["audio"].append(row.split(',')[0])
-    ds = datasets.Dataset.from_dict(datadict) 
-    ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        with open(csv_path) as csvfile:
+            next(csvfile)
+            for row in csvfile:
+                datadict["audio"].append(row.split(',')[0])
+        ds = datasets.Dataset.from_dict(datadict) 
+        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ds = datasets.Dataset.load_from_disk(cache_full_path) 
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
         batch["p_text"] = []
-        batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
+        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
         for uid in batch["id"]:
             if uid not in uttid_list:
                 batch["p_text"].append(None)
@@ -228,49 +233,54 @@ if __name__ == "__main__":
     model.eval()
 
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
+    ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
     count = 0
+    target = 0
+    #target = "fabm2at1"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  
         for row in ds:
+            if count != target:
                 count += 1
-                if count > 0:
-                    break
-                if row['id'] not in uttid_list:
-                    print("ignore uttid: " + row['id'] + ", no alignment can be found")
-                    continue
-        print("processing {0}".format(row['id']))
-        json_dict.update([("uid",row['id'])])
-        #step 1, authentic segmentation based on human annotation/ alignments from GMM-mono (pid_seq = list of (pid, start_idx, end_idx)
-        ali_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
-        segmented, raw_seq = seg_to_token_seq(ali_seq)
-        segmented = [(p, processor.tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
-        json_dict.update([("align-seq", segmented)])
-        #step 2 get the posterior matrix:
-        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-        logits = model(input_values)["logits"].squeeze(0)
-        post_mat = logits.softmax(dim=-1).type(torch.float64)
-        json_dict.update([("post_mat", post_mat.tolist())])
-        ##simulated insertion
-        #raw_seq.pop(2)
-        ##simulated deletion
-        #raw_seq.insert(3, "P")
-        pid_seq = processor.tokenizer.convert_tokens_to_ids(raw_seq)
-        ##run viterbi
-        pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)
-        path_int = get_backtrace_path(pointers)
-        path_int.reverse()
-        path_int = path_int[1:]
-        path_str = [ raw_seq[int((s-1)/2)] if s%2!=0 else '<pad>' for s in path_int]
-        path_pid = processor.tokenizer.convert_tokens_to_ids(path_str)
-        json_dict.update([("path_str", path_str)])
-        json_dict.update([("path_pid", path_pid)])
-        with open(sys.argv[5], 'w') as f:
-            json.dump(json_dict,f)
+                continue
+            #if row['id'] != target:
+            #    continue
+            if row['id'] not in uttid_list:
+                print("ignore uttid: " + row['id'] + ", no alignment can be found")
+                continue
+            print("processing {0}".format(row['id']))
+            json_dict.update([("uid",row['id'])])
+            #step 1, authentic segmentation based on human annotation/ alignments from GMM-mono (pid_seq = list of (pid, start_idx, end_idx)
+            ali_seq = ali_df.loc[ali_df.uttid == row["id"], "phonemes"].to_list()[0]
+            segmented, raw_seq = seg_to_token_seq(ali_seq)
+            segmented = [(p, processor.tokenizer._convert_token_to_id(p),s,e) for p,s,e in segmented]
+            json_dict.update([("align-seq", segmented)])
+            #step 2 get the posterior matrix:
+            input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+            logits = model(input_values)["logits"].squeeze(0)
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
+            json_dict.update([("post_mat", post_mat.tolist())])
+            ##simulated insertion
+            raw_seq.pop(2)
+            ##simulated deletion
+            #raw_seq.insert(3, "P")
+            pid_seq = processor.tokenizer.convert_tokens_to_ids(raw_seq)
+            ##run viterbi
+            pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)
+            path_int = get_backtrace_path(pointers)
+            path_int.reverse()
+            path_int = path_int[1:]
+            path_str = [ raw_seq[int((s-1)/2)] if s%2!=0 else '<pad>' for s in path_int]
+            path_pid = processor.tokenizer.convert_tokens_to_ids(path_str)
+            json_dict.update([("path_str", path_str)])
+            json_dict.update([("path_pid", path_pid)])
+            with open(sys.argv[5], 'w') as f:
+                json.dump(json_dict,f)
+            break
        
 
 

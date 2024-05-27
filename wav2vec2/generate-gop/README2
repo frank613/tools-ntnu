@@ -1,1 +1,7 @@
 python gop_ali_free_giamp_v5.py ./transcriptions/cmu.ctm /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/checkpoint-1250 data-new/data-for-w2v2/cmu-kids/metadata.csv /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/processor_config_gop/ ./cmu_gv5_enCTC.gop
+
+python gop_ali_free_giamp_v5_batch.py ./transcriptions/cmu.ctm /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/checkpoint-1250 data-new/data-for-w2v2/cmu-kids/metadata.csv /home/xinweic/tools-ntnu/wav2vec2/training/out-models/enCTC-large/processor_config_gop/ ./out-gops-cmu/cmu-enctc
+
+python gop_avg_posterior_ctc.py ./transcriptions/cmu_ali.txt ./models/ctc-en/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ctc ./out-gops/cmu_avg_ctc.gop
+
+python gop_ctc_align_forCE.py ./transcriptions/cmu.ctm ./models/wav2vec2_phoneme_ce/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ce/ ./out-gops/cmu_ctc_align_CE.gop

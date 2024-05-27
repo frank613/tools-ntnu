@@ -25,16 +25,8 @@ sil_tokens = set(["sil", "SIL", "SPN"])
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
-
-def writes(gops_list, outFile):
-    os.makedirs(os.path.dirname(outFile), exist_ok=True)
-    with open(outFile, 'w') as fw:
-        for key, gop_list in gops_list:
-            fw.write(key+'\n')
-            for cnt, (p,score) in enumerate(gop_list):
-                fw.write("%d %s %.3f\n"%(cnt, p, score))
-            fw.write("\n")
-  
+##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
+torch.set_num_threads(1)
     
 def read_trans(trans_path):
     trans_map = {}
@@ -181,12 +173,15 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:
                     sum = check_arbitrary(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
-                        if t == 1:
-                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
+                        if t == 1: 
+                            # only pos == 1, or s == 2 is affected
+                            removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
+                        else: 
+                            removed = alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1] ## allow for jump, but only once, same as in v2
+                        if s == 2: 
                             alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]
-                        else:       
-                            removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
-                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0] + alphas[s-3,t-1,0]) * params[blank,t]  
+                        else:        
+                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0] + alphas[s-3,t-1,0]) * params[blank,t]
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -197,19 +192,12 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                         * params[seq[l],t]
             elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension, and also consider the skip paths
                 sum = check_arbitrary(alphas, s-2, t-1, [0,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
-                skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
-                skip_empty = alphas[s-3,t-1,0] * params[seq[l],t]
                 if l-2 < 0 or seq[l-2] == seq[l]: ###dont allow token skip
                     skip_token = 0
-                if t == 1: ## dont allow empty skip
-                    skip_empty = 0
                 else:
-                    ##remove duplicate path1 
-                    skip_empty = skip_empty -  alphas[s-3,t-2,0]*params[blank, t-1]*params[seq[l],t]  
-                    if s-4 >= 0: 
-                        ##remove duplicate path 1 and 2
-                        skip_empty = skip_empty -  alphas[s-3,t-2,0]*params[blank, t-1]*params[seq[l],t] -  alphas[s-4,t-2,0]*params[blank, t-1]*params[seq[l],t]
-                  
+                    skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
+                skip_empty = 0
+                ##skip emtpy is always zero, already included in alphas[s-1,t-1,0], see the picture on phone  
                 alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
@@ -231,13 +219,37 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
         #no need explictly the alphas of T-2 for skip now because in this version we extendted the valid states at time T-1
         llForward = torch.log(sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
-        
     else:
         llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
-       
 
     return -llForward
-    
+
+def single_process(example, p_tokenizer, processor, model, out_path):
+    row = example
+    proc_id = str(os.getpid())
+    print("processing {0}".format(row['id']))
+    with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
+        f.write(row['id']+'\n')
+        #get the total likelihood of the lable
+        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
+        #the default loss here in the config file is "ctc_loss_reduction": "sum" 
+        labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
+        labels = labels.type(torch.int32)
+        ##return the log_like to check the correctness of our function
+        return_dict = model(input_values, labels = labels)
+        logits = return_dict["logits"].squeeze(0) 
+        post_mat = logits.softmax(dim=-1).type(torch.float64)
+        ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+        #step 2, compute the GOP
+        pids = labels.tolist()
+        for i,pid in enumerate(pids):
+            ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+            gop = -ll_self + ll_denom
+            f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
+        f.write("\n")
+
+        
+
 if __name__ == "__main__":
 
     print(sys.argv)
@@ -259,51 +271,13 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path)
-    #cuda = torch.device('cuda:1')
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=10) 
     
-    #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
-    #count = 0
-    with torch.no_grad():
-        #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
-        gops_list = []  # (uttid, (phoneme, scores))
-        for row in ds:
-            #count += 1
-            #if count > 10:
-            #    break
-            #if row['id'] != 'fabm2cy2':
-                #continue
-            if row['id'] not in uttid_list:
-                print("ignore uttid: " + row['id'] + ", no transcription can be found")
-                continue
-            print("processing {0}".format(row['id']))
-            #get the total likelihood of the lable
-            input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-            #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
-            labels = labels.type(torch.int32)
-            ##return the log_like to check the correctness of our function
-            return_dict = model(input_values, labels = labels)
-            log_like_total = return_dict["loss"].squeeze(0)
-            logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1).type(torch.float64)
-            ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-            llDiff = np.abs(log_like_total - ll_self)
-            if llDiff > 1 :
-                print(f"model ll: {log_like_total}, function ll: {ll_self}")
-
-            #step 2, compute the GOP
-            pids = labels.tolist()
-            gop_list = []
-            for i,pid in enumerate(pids):
-                ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-                gop = -ll_self + ll_denom
-                gop_list.append((p_tokenizer._convert_id_to_token(pid), gop))
-            gops_list.append((row['id'], gop_list))
- 
+    print("done")
+    
+    
        
 
-    print("done with GOP computation")
-    writes(gops_list, sys.argv[5])
 
 
 

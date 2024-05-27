@@ -20,11 +20,15 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 #spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-sil_tokens = set(["sil","SIL","SPN"])
-spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
+sil_token = "SIL"
+noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
+
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
+
+#RE for CMU-kids
+re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
 
 def writes(gops_list, outFile):
@@ -48,26 +52,28 @@ def read_trans(trans_path):
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
             phoneme = re_phone.match(items[4]).group(1)
-            if phoneme not in (sil_tokens | spec_tokens):
+            if phoneme not in (set([sil_token]) | noisy_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
 
-def load_dataset_local_from_dict(folder_path):
-    datadict = {"audio": []}  
-    #with open(folder_path + '/metadata.csv') as csvfile:
-    with open(csv_path) as csvfile:
-        next(csvfile)
-        for row in csvfile:
-            #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
-            datadict["audio"].append(row.split(',')[0])
-    ds = datasets.Dataset.from_dict(datadict) 
-    ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+def load_dataset_local_from_dict(csv_path, cache_additional): 
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        datadict = {"audio": []}  
+        with open(csv_path) as csvfile:
+            next(csvfile)
+            for row in csvfile:
+                datadict["audio"].append(row.split(',')[0])
+        ds = datasets.Dataset.from_dict(datadict) 
+        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ds = datasets.Dataset.load_from_disk(cache_full_path)
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
         batch["p_text"] = []
-        batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
+        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
         for uid in batch["id"]:
             if uid not in uttid_list:
                 batch["p_text"].append(None)
@@ -81,72 +87,64 @@ def load_dataset_local_from_dict(folder_path):
     return ds_filtered
 
 ##return the segement of the arbitrary state from the best path(with the largest conrtibution to the denominator), compare it to the forward algrotihm, we don't need to "remove" anything because we take the maximum for viterbi
-def viterbi_ctc(params, seq, blank=0):
-    """
-    CTC loss function.
-    params - n x m matrix of n-D probability distributions(softmax output) over m frames.
-    seq - sequence of phone id's for given example.
-    Returns objective, alphas and betas.
-    """
-    seqLen = seq.shape[0] # Length of label sequence (# phones)
-    numphones = params.shape[0] # Number of labels
-    L = 2*seqLen + 1 # Length of label sequence with blanks
-    T = params.shape[1] # Length of utterance (time)
-    P = params.shape[0] # number of non-blank tokens    
+def get_ali_pointers(post_mat, p_seq):
+    seq_len = len(p_seq)
+    numphones = post_mat.shape[0] # Number of labels, including SIL  
+    L = seq_len ## added optional sil to each phoneme
+    T = post_mat.shape[1]
 
-    ##the alphas[s,t] stors the best posterior for the current s at t
-    alphas = torch.zeros((L,T)).double()
-    
-    ##For backtrace, the pointer[s,t] stores the source state of the alphas[s,t]. For t = 0 store -1. 
-    #At T+1, the last time step store the winner of final state 0 (only one state (0) valid at T+1)
-    pointers = torch.zeros((L,T+1)).double()
-    
-    # Initialize alphas for viterbi
- 
-    alphas[0,0] = params[blank,0]
-    alphas[1,0] = params[seq[0],0]
+    # alphas stores best posterior for the current s at t
+    alphas= torch.zeros((L,T)).double()
+    pointers = torch.zeros((L,T+1))
+
+    # Initialize, note that the first SIL and last SIL is not optional in CE
+    alphas[0,0] = post_mat[p_seq[0],0] 
     pointers[0,0] = -1
-    pointers[1,0] = -1
-
     for t in range(1,T):
-        start = max(0,L-2*(T-t)) 
+        start = max(0, L-2*(T-t-1)-1)
         for s in range(start,L):
-            l = int((s-1)/2)
-            # blank
+            s_index = p_seq[s]
+            #SIL
             if s%2 == 0:
-                if s==0:
-                    alphas[s,t] = alphas[s,t-1] * params[blank,t]
-                    pointers[s,t] = s #stays at s=0
-                else:         
-                    winner = max(alphas[s,t-1], alphas[s-1,t-1])
-                    alphas[s,t] = winner * params[blank,t]
-                    pointers[s,t] = s if alphas[s,t] == alphas[s,t-1]* params[blank,t] else s-1
-            else:
-                if l == 0 or seq[l] == seq[l-1]:
-                    s0 = alphas[s,t-1]
-                    s1 = alphas[s-1,t-1]
-                    s2 = -1
-                    
-                else:
-                    s0 = alphas[s,t-1]
-                    s1 = alphas[s-1,t-1]
-                    s2 = alphas[s-2,t-1]
-                winner = max(s0,s1,s2)
-                alphas[s,t] = winner * params[seq[l],t]
-                if winner == s0: ## stays at s=0
+                if s == 0:
+                    alphas[s,t] = alphas[s,t-1] * post_mat[s_index, t]
                     pointers[s,t] = s
-                elif winner == s1: ## leaving the arbitrary state at t, keep 
-                    pointers[s,t] = s-1
                 else:
-                    pointers[s,t] = s-2
-
-    empty_p = alphas[L-1, T-1]
-    final_p = alphas[L-2, T-1]
-    winner = max(final_p, empty_p)
-    if winner == final_p: 
-        pointers[0,T] = L-2
-    else:
-        pointers[0,T] = L-1             
+                    s0 = alphas[s,t-1] 
+                    s1 = alphas[s-1,t-1]
+                    winner = max(s0,s1)
+                    alphas[s,t] = winner * post_mat[s_index,t]
+                    if winner == s0:
+                        pointers[s,t] = s
+                    else:
+                        pointers[s,t] = s-1
+            #Non-SIL
+            else:
+                if s == 1:
+                    s0 = alphas[s,t-1]
+                    s1 = alphas[s-1,t-1]
+                    winner = max(s0, s1)
+                    alphas[s,t] = winner * post_mat[s_index,t]
+                    if winner == s0:
+                        pointers[s,t] = s
+                    else:
+                        pointers[s,t] = s-1
+                else:
+                    s0 = alphas[s,t-1]
+                    s1 = alphas[s-1,t-1]
+                    ## do we allow token1 -> token2  when they are identical? yes! since it's not forward(sum) but viterbi(max), so we are fine
+                    s2 = alphas[s-2,t-1]  
+                    winner = max(s0,s1,s2)
+                    alphas[s,t] = winner * post_mat[s_index,t]
+                    if winner == s0:
+                        pointers[s,t] = s
+                    elif winner == s1:
+                        pointers[s,t] = s-1
+                    else:
+                        pointers[s,t] = s-2
+       
+    ##last time-step for backtrace, stored at state 0 always
+    pointers[0,T] = L-1 
     return pointers
 
 
@@ -187,7 +185,7 @@ if __name__ == "__main__":
     model.eval()
    
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
+    ds= load_dataset_local_from_dict(csv_path, 'cmu-kids')
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
@@ -199,25 +197,32 @@ if __name__ == "__main__":
             #count += 1
             #if count > 10:
                 #break
-            #if row['id'] != 'fabm2cy2':
-                #continue
+            #if row['id'] != 'fabm2ao2':
+            #    continue
             print("processing {0}".format(row['id']))
             #get the total likelihood of the lable
             input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
             #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(row["p_text"]))
-            labels = labels.type(torch.int32)
-            ##return the log_like to check the correctness of our function
-            return_dict = model(input_values, labels = labels)
-            log_like_total = return_dict["loss"].squeeze(0)
-            logits = return_dict["logits"].squeeze(0) 
-            post_mat = logits.softmax(dim=-1).type(torch.float64).transpose(0,1)
-      
+            raw_seq = row["p_text"]
+            ##add optional SIL to p_seq
+            p_seq = [sil_token]
+            for p in raw_seq:
+                p_seq.append(p)
+                p_seq.append(sil_token)
+            pid_seq = p_tokenizer.convert_tokens_to_ids(p_seq)
+            #pid_seq = pid_seq.type(torch.int32)
+            logits = model(input_values)["logits"].squeeze(0)
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
+            ##merge noisy tokens to SIL:
+            sil_index = p_tokenizer._convert_token_to_id(sil_token)
+            noisy_labels = p_tokenizer.convert_tokens_to_ids(list(noisy_tokens))
+            post_mat[:, sil_index] = post_mat[:,sil_index] + torch.sum(post_mat[:,noisy_labels], axis=-1)
+            post_mat = post_mat.transpose(0,1)
+
             #step 2, compute the GOP
-            pointers = viterbi_ctc(post_mat, labels, blank=0)
+            pointers = get_ali_pointers(post_mat, pid_seq)
             full_path_int = get_backtrace_path(pointers)[:-1]
             full_path_int.reverse()
-            pids = labels.tolist()
             gop_list = []
             last_state = 0
             post_count = 0
@@ -227,17 +232,20 @@ if __name__ == "__main__":
                 l_new = int((state - 1)/2) 
                 if state != last_state:
                     if post_count != 0: ##previous state is not blank, token->blank or token1->token2
-                        gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), post_total/post_count))
+                        app_token = raw_seq[l]
+                        gop_list.append((app_token, post_total/post_count))
                         post_count = 0
                         post_total = 0
                     #else: # blank->token
                 if state%2 != 0:
                     post_count += 1
-                    post_total += post_mat[pids[l_new],i]
+                    post_total += post_mat[pid_seq[state],i]
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), post_total/post_count))
+                gop_list.append((raw_seq[l], post_total/post_count))
+            ## the state is able to tell when to separate two idnetical tokens, for example "AH AH"
+            assert len(gop_list) == len(raw_seq) 
             gops_list.append((row['id'], gop_list))
  
        

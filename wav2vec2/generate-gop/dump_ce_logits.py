@@ -118,10 +118,10 @@ def get_ali_pointers(post_mat, p_seq):
     T = post_mat.shape[1]
 
     # alphas stores best posterior for the current s at t
-    alphas= torch.zeros((L,T))
+    alphas= torch.zeros((L,T)).double()
     pointers = torch.zeros((L,T+1))
 
-    # Initialize, not that the first SIL and last SIL is not optional in CE
+    # Initialize, note that the first SIL and last SIL is not optional in CE
     alphas[0,0] = post_mat[p_seq[0],0] 
     pointers[0,0] = -1
     for t in range(1,T):
@@ -167,7 +167,7 @@ def get_ali_pointers(post_mat, p_seq):
                         pointers[s,t] = s-2
        
     ##last time-step for backtrace, stored at state 0 always
-    pointers[0,T-1] = L-1 
+    pointers[0,T] = L-1 
     return pointers
 
     
@@ -243,7 +243,7 @@ if __name__ == "__main__":
         ##simulated insertion
         #raw_seq.pop(2)
         ##simulated deletion
-        raw_seq.insert(3, "P")
+        #raw_seq.insert(3, "P")
         for p in raw_seq:
             p_seq.append(p)
             p_seq.append("SIL")
