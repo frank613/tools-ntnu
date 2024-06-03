@@ -12,8 +12,12 @@ import torch
 from pathlib import Path
 import pdb
 
-datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
-datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
+
+ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
+ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
+datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
+datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
+
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
@@ -22,6 +26,9 @@ sil_tokens = set(["sil", "SIL", "SPN"])
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
+#RE for CMU-kids
+re_uttid_raw = re.compile(r'(.*)\.(.*$)')
+
 
 def writes(gops_list, outFile):
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
@@ -29,7 +36,7 @@ def writes(gops_list, outFile):
         for key, gop_list in gops_list:
             fw.write(key+'\n')
             for cnt, (p,score) in enumerate(gop_list):
-                fw.write("%d %s %.3f\n"%(cnt, p, score))
+                fw.write("%d %s %s\n"%(cnt, p, score.item()))
             fw.write("\n")
   
     
@@ -49,30 +56,34 @@ def read_trans(trans_path):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
-
-def load_dataset_local_from_dict(folder_path):
-    datadict = {"audio": []}  
-    with open(folder_path + '/metadata.csv') as csvfile:
-        next(csvfile)
-        for row in csvfile:
-            datadict["audio"].append(folder_path + '/' + row.split(',')[0])
-    ds = datasets.Dataset.from_dict(datadict) 
-    ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+def load_dataset_local_from_dict(csv_path, cache_additional):
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        datadict = {"audio": []}
+        #with open(folder_path + '/metadata.csv') as csvfile:
+        with open(csv_path) as csvfile:
+            next(csvfile)
+            for row in csvfile:
+                #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
+                datadict["audio"].append(row.split(',')[0])
+        ds = datasets.Dataset.from_dict(datadict)
+        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ds = datasets.Dataset.load_from_disk(cache_full_path)
     #get the array for single row
-    def map_to_array(batch):   
+    def map_to_array(batch):
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
         batch["p_text"] = []
-        batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
+        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
         for uid in batch["id"]:
             if uid not in uttid_list:
                 batch["p_text"].append(None)
             else:
                 batch["p_text"].append(tran_map[uid])
         return batch
-
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-    #ds_filtered = ds_map
+    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=3)
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
 
     return ds_filtered
 
@@ -216,18 +227,18 @@ if __name__ == "__main__":
     model.eval()
 
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
+    ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
-    #count = 0
+    count = 0
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         gops_list = []  # (uttid, (phoneme, scores))
         for row in ds:
-            #count += 1
-            #if count > 10:
-            #    break
+            count += 1
+            if count > 1:
+                break
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no transcription can be found")
                 continue

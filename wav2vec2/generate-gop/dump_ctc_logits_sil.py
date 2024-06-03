@@ -28,8 +28,6 @@ noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
-
-#RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
 ##segmentation, new phonemes are annotated as "_#", also return raw phoneme seq without SPN and SIL
@@ -238,17 +236,17 @@ if __name__ == "__main__":
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
     count = 0
-    target = 0
-    #target = "fabm2at1"
+    #target = 0
+    target = "fabm2ab2"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  
         for row in ds:
-            if count != target:
-                count += 1
-                continue
-            #if row['id'] != target:
+            #if count != target:
+            #    count += 1
             #    continue
+            if row['id'] != target:
+                continue
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no alignment can be found")
                 continue
@@ -268,6 +266,8 @@ if __name__ == "__main__":
             #raw_seq.pop(2)
             ##simulated deletion
             #raw_seq.insert(3, "P")
+            ##add SIL
+            raw_seq = [sil_token] + raw_seq + [sil_token] 
             pid_seq = processor.tokenizer.convert_tokens_to_ids(raw_seq)
             ##run viterbi
             pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)

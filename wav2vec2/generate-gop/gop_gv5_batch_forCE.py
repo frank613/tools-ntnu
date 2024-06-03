@@ -115,20 +115,24 @@ def ctc_loss_forCE(params, seq, blank=0):
             else:
                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                     * params[seq[l],t]
-	    
+	
+    pdb.set_trace()    
     llForward = torch.log(alphas[L-1, T-1] + alphas[L-2, T-1])
     #pForward = alphas[L-1, T-1] + alphas[L-2, T-1]
 	
-    return llForward
+    return -llForward
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-def check_arbitrary(in_alphas, s, t, mask, zero_pos=[]):
+def check_arbitrary(in_alphas, s, t, zero_pos=[]):
     if torch.count_nonzero(in_alphas[s,t]) > 1:
         if len(zero_pos) != 0:
+            mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
                 mask[i] = 0
-        return sum(in_alphas[s,t] * mask )
+            return sum(in_alphas[s,t] * mask)
+        else:
+            return sum(in_alphas[s,t])
     else:
         return False
     
@@ -148,7 +152,7 @@ def ctc_loss_denom_forCE(params, seq, pos, ce_mask, blank=0):
 
     ## constraint mask for disabling insertion
     mask_ins = torch.eye(P)
-    mask_ins[0,:] = torch.ones(P)
+    mask_ins[blank,:] = torch.ones(P)
     
     ##extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
@@ -176,10 +180,10 @@ def ctc_loss_denom_forCE(params, seq, pos, ce_mask, blank=0):
                 if s==0:
                     alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
-                    sum = check_arbitrary(alphas, s-1, t-1, ce_mask, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    sum = check_arbitrary(alphas, s-1, t-1, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
                         if t == 1: 
-                            # only pos == 1, or s == 2 is affected
+                            # only pos == 0, or s == 2 is affected
                             removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
                         else: 
                             removed = alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1] ## allow for jump, but only once, same as in v2
@@ -193,10 +197,9 @@ def ctc_loss_denom_forCE(params, seq, pos, ce_mask, blank=0):
                 if s == 1 or seq[l] == seq[l-1]:   # the first label or same label twice
                     alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[seq[l],t]
                 else:
-                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
-                        * params[seq[l],t]
+                    alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) * params[seq[l],t]
             elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension, and also consider the skip paths
-                sum = check_arbitrary(alphas, s-2, t-1, ce_mask, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                sum = check_arbitrary(alphas, s-2, t-1, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
                 if l-2 < 0 or seq[l-2] == seq[l]: ###dont allow token skip
                     skip_token = 0
                 else:
@@ -209,19 +212,19 @@ def ctc_loss_denom_forCE(params, seq, pos, ce_mask, blank=0):
                     empty_prob = alphas[s-1,t-1,0] * params[:,t] * ce_mask
                     empty_prob[blank] = 0
 
-                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) * ce_mask + empty_prob
+                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + empty_prob ) * ce_mask
                 else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
-                    skip_prob = alphas[s-2,t-1,0] * params[:,t] * ce_mask 
+                    skip_prob = alphas[s-2,t-1,0] * params[:,t] 
                     skip_prob[seq[l-1]] = 0    
                     skip_prob[blank] = 0    
 
-                    empty_prob = alphas[s-1,t-1,0] * params[:,t] * ce_mask
+                    empty_prob = alphas[s-1,t-1,0] * params[:,t] 
                     empty_prob[blank] = 0
 
-                    alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) * ce_mask + skip_prob + empty_prob
+                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1)  + skip_prob + empty_prob) * ce_mask
          
-    sum = check_arbitrary(alphas, L-2, T-1, ce_mask)    
-    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
+    sum = check_arbitrary(alphas, L-2, T-1)
+    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0]
         #no need explictly the alphas of T-2 for skip now because in this version we extendted the valid states at time T-1
         llForward = torch.log(sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
     else:
@@ -232,6 +235,9 @@ def ctc_loss_denom_forCE(params, seq, pos, ce_mask, blank=0):
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
+    if row['id'] != "fahj1cm2":
+    #if row['id'] != "fabm2aa1":
+        return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -252,12 +258,12 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         ce_mask[noisy_labels] = 0
         
         ##get numerator
-        sil_id = p_tokenizer._convert_token_to_id(sil_token)
-        ll_self = ctc_loss_forCE(post_mat.transpose(0,1), labels, blank = sil_id)
+        ll_self = ctc_loss_forCE(post_mat.transpose(0,1), labels, blank = sil_index)
+        pdb.set_trace()
         #step 2, compute the GOP
         pids = labels.tolist()
         for i,pid in enumerate(pids):
-            ll_denom = ctc_loss_denom_forCE(post_mat.transpose(0,1), labels, i, ce_mask, blank=sil_id)
+            ll_denom = ctc_loss_denom_forCE(post_mat.transpose(0,1), labels, i, ce_mask, blank=sil_index)
             gop = -ll_self + ll_denom
             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
         f.write("\n")
