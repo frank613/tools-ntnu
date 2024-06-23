@@ -10,7 +10,7 @@ import datasets
 from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor,Wav2Vec2ForCTC
 import torch
 from pathlib import Path
-from my_w2v2_package.entropy_loss import ctc_entropy_cost
+from my_w2v2_package.entropy_loss import ctc_prior_entropy_cost
 import my_w2v2_package.entropy_loss as entropy_loss
 import pdb
 
@@ -24,6 +24,7 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
+sil_vocab = "SIL"
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -87,7 +88,7 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
 
 
 
-def single_process(example, p_tokenizer, processor, model, out_path):
+def single_process(example, p_tokenizer, processor, model, sil_token_id, out_path):
     row = example
     proc_id = str(os.getpid())
     # if row["id"] != "fabm2bt2":
@@ -99,6 +100,9 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
         #the default loss here in the config file is "ctc_loss_reduction": "sum" 
         labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
+        ##add silence
+        labels = torch.cat((torch.Tensor([sil_token_id]), labels), dim=0) 
+        labels = torch.cat((labels, torch.Tensor([sil_token_id])), dim=0) #(batch, U+2)
         labels = labels.type(torch.int32)
         ##return the log_like to check the correctness of our function
         return_dict = model(input_values, labels = labels)
@@ -108,9 +112,8 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         #step 2, compute the conditoned entropy, here we only use batch_size = 1 
         len_labels = torch.Tensor([labels.shape[0]]).type(torch.int)
         len_T = torch.Tensor([log_prob.shape[0]]).type(torch.int)
-        entropy, logP = ctc_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, blank=p_tokenizer.pad_token_id) 
-        f.write("%s %d %d %s %s\n"%(row['id'], len_labels, len_T, entropy.item(), logP.item()))
-
+        entropy, label_entropy, logP = ctc_prior_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, conditioned=False,  blank=p_tokenizer.pad_token_id) 
+        f.write("%s %d %d %s %s %s\n"%(row['id'], len_labels, len_T, entropy.item(), label_entropy.item(), logP.item()))
         
 
 if __name__ == "__main__":
@@ -135,7 +138,8 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=1) 
+    sil_id = p_tokenizer._convert_token_to_id(sil_vocab)
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "sil_token_id":sil_id, "out_path":sys.argv[5]}, num_proc=1) 
     
     print("done")
     

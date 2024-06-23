@@ -11,8 +11,10 @@ from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor
 import torch
 from pathlib import Path
 from my_w2v2_package.entropy_loss import ctc_entropy_cost
+import my_w2v2_package.entropy_loss as entropy_loss
 import pdb
 
+entropy_loss.cuda = False    
 
 ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
 ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
@@ -100,7 +102,7 @@ def single_process(example, p_tokenizer, processor, model, sil_token_id, out_pat
         labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
         ##add silence
         labels = torch.cat((torch.Tensor([sil_token_id]), labels), dim=0) 
-        labels = torch.cat((labels, torch.Tensor([sil_token_id])), dim=1) #(batch, U+2)
+        labels = torch.cat((labels, torch.Tensor([sil_token_id])), dim=0) #(batch, U+2)
         labels = labels.type(torch.int32)
         ##return the log_like to check the correctness of our function
         return_dict = model(input_values, labels = labels)
@@ -108,10 +110,10 @@ def single_process(example, p_tokenizer, processor, model, sil_token_id, out_pat
         ## we use the log version of the code from en-ctc
         log_prob = logits.log_softmax(dim=-1).type(torch.float32)
         #step 2, compute the conditoned entropy, here we only use batch_size = 1 
-        len_labels = torch.Tensor([labels.shape[0]]).type(torch.int)[None]
-        len_T = torch.Tensor([log_prob.shape[0]]).type(torch.int)[None]
-        entropy, _ = ctc_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, blank=p_tokenizer.pad_token_id) 
-        f.write("%s %d %d %s\n"%(row['id'], len_labels, len_T, entropy.item()))
+        len_labels = torch.Tensor([labels.shape[0]]).type(torch.int)
+        len_T = torch.Tensor([log_prob.shape[0]]).type(torch.int)
+        entropy, logP = ctc_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, blank=p_tokenizer.pad_token_id) 
+        f.write("%s %d %d %s %s\n"%(row['id'], len_labels, len_T, entropy.item(),  logP.item()))
 
         
 

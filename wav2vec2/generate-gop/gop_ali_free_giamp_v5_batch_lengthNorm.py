@@ -283,12 +283,13 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         return_dict = model(input_values, labels = labels)
         logits = return_dict["logits"].squeeze(0) 
         post_mat = logits.softmax(dim=-1).type(torch.float64)
+        len_frames = post_mat.size(dim=0)
         ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
         #step 2, compute the GOP
         pids = labels.tolist()
         for i,pid in enumerate(pids):
             ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-            gop = -ll_self + ll_denom
+            gop = (-ll_self + ll_denom) / len_frames
             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
         f.write("\n")
 

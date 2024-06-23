@@ -10,7 +10,7 @@ import datasets
 from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor,Wav2Vec2ForCTC
 import torch
 from pathlib import Path
-from my_w2v2_package.entropy_loss import ctc_entropy_cost
+from my_w2v2_package.entropy_loss import ctc_prior_entropy_cost
 import my_w2v2_package.entropy_loss as entropy_loss
 import pdb
 
@@ -106,10 +106,12 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         ## we use the log version of the code from en-ctc
         log_prob = logits.log_softmax(dim=-1).type(torch.float32)
         #step 2, compute the conditoned entropy, here we only use batch_size = 1 
+        pdb.set_trace()
         len_labels = torch.Tensor([labels.shape[0]]).type(torch.int)
         len_T = torch.Tensor([log_prob.shape[0]]).type(torch.int)
-        entropy, logP = ctc_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, blank=p_tokenizer.pad_token_id) 
-        f.write("%s %d %d %s %s\n"%(row['id'], len_labels, len_T, entropy.item(), logP.item()))
+        ## we don't need conditioned on the label for calculate the vocab-entropy, as it is for training. Here as a measure, unditioned ensures the number of values are same over all the utterences
+        entropy, label_entropy, logP = ctc_prior_entropy_cost(log_prob[:,None], labels, len_T, len_labels, sumed=True, conditioned=False,  blank=p_tokenizer.pad_token_id) 
+        f.write("%s %d %d %s %s %s\n"%(row['id'], len_labels, len_T, entropy.item(), label_entropy.item(), logP.item()))
 
         
 
@@ -118,7 +120,7 @@ if __name__ == "__main__":
     print(sys.argv)
     if len(sys.argv) != 6:
         sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
-        , it calculates the conditioned entropy for the whole dataset") 
+        , it calculates the conditioned entropy and also vocabulary entropy for the whole dataset") 
     
     #step 0, read the files
     tran_map = read_trans(sys.argv[1]) 
