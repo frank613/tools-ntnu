@@ -136,6 +136,7 @@ def check_arbitrary(in_alphas, s, t, zero_pos=[]):
         return False
     
 ##return only likeli, given the postion for arbitrary state, 
+##This version is out-dated, some paths are duplicated and fload underflow can happen for long utterences.  Use the batch-version or noramlized-batch-version. 
 def ctc_loss_denom(params, seq, pos, blank=0):
     """
     CTC loss function.

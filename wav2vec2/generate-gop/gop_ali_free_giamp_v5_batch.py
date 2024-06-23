@@ -25,6 +25,9 @@ sil_tokens = set(["sil", "SIL", "SPN"])
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
+#RE for CMU-kids
+re_uttid_raw = re.compile(r'(.*)\.(.*$)')
+
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
     
@@ -45,21 +48,25 @@ def read_trans(trans_path):
     return trans_map 
 
 
-def load_dataset_local_from_dict(csv_path):
-    datadict = {"audio": []}  
-    #with open(folder_path + '/metadata.csv') as csvfile:
-    with open(csv_path) as csvfile:
-        next(csvfile)
-        for row in csvfile:
-            #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
-            datadict["audio"].append(row.split(',')[0])
-    ds = datasets.Dataset.from_dict(datadict) 
-    ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+def load_dataset_local_from_dict(csv_path, cache_additional):
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        datadict = {"audio": []}  
+        #with open(folder_path + '/metadata.csv') as csvfile:
+        with open(csv_path) as csvfile:
+            next(csvfile)
+            for row in csvfile:
+                #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
+                datadict["audio"].append(row.split(',')[0])
+        ds = datasets.Dataset.from_dict(datadict) 
+        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ds = datasets.Dataset.load_from_disk(cache_full_path)
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
         batch["p_text"] = []
-        batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
+        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
         for uid in batch["id"]:
             if uid not in uttid_list:
                 batch["p_text"].append(None)
@@ -143,7 +150,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 
     ## constraint mask for disabling insertion
     mask_ins = torch.eye(P)
-    mask_ins[0,:] = torch.ones(P)
+    mask_ins[blank,:] = torch.ones(P)
     
     ##extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
@@ -160,7 +167,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     else:
         alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
-
+        
     for t in range(1,T):
         ###different from v3, +1 below for possible skip paths at the final states
         start = max(0,L-2*(T-t+1)) 
@@ -171,14 +178,16 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 if s==0:
                     alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
-                    sum = check_arbitrary(alphas, s-1, t-1, [0]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    sum = check_arbitrary(alphas, s-1, t-1, [blank]) 
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
-                        if t == 1:
-                            removed = alphas[s,t-1,0] - alphas[s-2,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
-                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0]) * params[blank,t]
-                        else:       
-                            removed =  alphas[s,t-1,0] - alphas[s-2,t-2,0] * params[blank,t-1]  ## allow for jump, but only once, same as in v2
-                            alphas[s,t,0] = (removed + sum + alphas[s-2,t-1,0] + alphas[s-3,t-1,0]) * params[blank,t]  
+                        if t == 1: 
+                            # only pos == 1, or s == 2 is affected
+                            removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
+                        else: 
+                            removed = alphas[s,t-1,0] 
+                        ## we now strictly allow the blank state can be used only for aribitrary state exit, not for skip paths 
+                        alphas[s,t,0] = (removed + sum) * params[blank,t]
+        
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -188,22 +197,16 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
                         * params[seq[l],t]
             elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension, and also consider the skip paths
-                sum = check_arbitrary(alphas, s-2, t-1, [0,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
-                skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
-                skip_empty = alphas[s-3,t-1,0] * params[seq[l],t]
+                sum = check_arbitrary(alphas, s-2, t-1, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
                 if l-2 < 0 or seq[l-2] == seq[l]: ###dont allow token skip
                     skip_token = 0
+                else:
+                    skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
+                ##we allow skip empty in this version, following the graph in the paper. No need to remove because the state[s-1] is blocked for skip.
                 if t == 1: ## dont allow empty skip
                     skip_empty = 0
                 else:
-                    skip_empty = skip_empty -  alphas[s-3,t-2,0]*params[blank, t-1]*params[seq[l],t]  
-                    if s-4 < 0: 
-                        ##remove duplicate path1 
-                        skip_empty = skip_empty -  alphas[s-3,t-2,0]*params[blank, t-1]*params[seq[l],t] 
-                    else:
-                        ##remove duplicate path 1 and 2
-                        skip_empty = skip_empty -  alphas[s-3,t-2,0]*params[blank, t-1]*params[seq[l],t] -  alphas[s-4,t-2,0]*params[blank, t-1]*params[seq[l],t]
-                  
+                    skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
                 alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
@@ -222,7 +225,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob
          
     sum = check_arbitrary(alphas, L-2, T-1)    
-    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path
+    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0]
         #no need explictly the alphas of T-2 for skip now because in this version we extendted the valid states at time T-1
         llForward = torch.log(sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
     else:
@@ -276,7 +279,7 @@ if __name__ == "__main__":
     model.eval()
 
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
+    ds = load_dataset_local_from_dict(csv_path, "cmu-kids")
     ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=20) 
     
     print("done")
