@@ -1,0 +1,1 @@
+python dump_ctc_logits_my_model.py ./transcriptions/cmu_ali.txt ../training/out-models/ctc-large/checkpoint-500  ~/data/data-for-w2v2/cmu-kids/metadata.csv ../training/out-models/ctc-large/processor_config/ ./out.json

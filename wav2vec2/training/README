@@ -1,0 +1,1 @@
+python ./my_train.py ./transcription-ctm/train_100.ctm ./transcription-ctm/dev_clean.ctm ./pretrained-models/wav2vec2-large-xlsr-53/ ./data/data-for-w2v2/libri/train-clean-100/metadata.csv ./data/data-for-w2v2/libri/dev-clean/metadata.csv ./out-models/ctc-large/
