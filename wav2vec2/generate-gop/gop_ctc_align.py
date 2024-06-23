@@ -237,7 +237,7 @@ if __name__ == "__main__":
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), post_total/post_count))
+                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.exp(post_total/post_count)))
             gops_list.append((row['id'], gop_list))
  
        

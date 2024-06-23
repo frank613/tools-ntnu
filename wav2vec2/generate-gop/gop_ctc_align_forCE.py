@@ -243,7 +243,7 @@ if __name__ == "__main__":
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((raw_seq[l], post_total/post_count))
+                gop_list.append((raw_seq[l], torch.exp(post_total/post_count)))
             ## the state is able to tell when to separate two idnetical tokens, for example "AH AH"
             assert len(gop_list) == len(raw_seq) 
             gops_list.append((row['id'], gop_list))
