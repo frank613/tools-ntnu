@@ -233,7 +233,7 @@ if __name__ == "__main__":
                 if state != last_state:
                     if post_count != 0: ##previous state is not blank, token->blank or token1->token2
                         app_token = raw_seq[l]
-                        gop_list.append((app_token, post_total/post_count))
+                        gop_list.append((app_token, torch.log(post_total/post_count)))
                         post_count = 0
                         post_total = 0
                     #else: # blank->token
@@ -243,7 +243,7 @@ if __name__ == "__main__":
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((raw_seq[l], torch.exp(post_total/post_count)))
+                gop_list.append((raw_seq[l], torch.log(post_total/post_count)))
             ## the state is able to tell when to separate two idnetical tokens, for example "AH AH"
             assert len(gop_list) == len(raw_seq) 
             gops_list.append((row['id'], gop_list))

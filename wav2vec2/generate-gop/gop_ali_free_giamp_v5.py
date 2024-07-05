@@ -124,7 +124,7 @@ def ctc_loss(params, seq, blank=0):
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if torch.count_nonzero(in_alphas[s,t]) > 1:
+    if in_alphas[s,t].sum() > 0:
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:

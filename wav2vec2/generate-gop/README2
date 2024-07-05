@@ -5,3 +5,5 @@ python gop_ali_free_giamp_v5_batch.py ./transcriptions/cmu.ctm /home/xinweic/too
 python gop_avg_posterior_ctc.py ./transcriptions/cmu_ali.txt ./models/ctc-en/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ctc ./out-gops/cmu_avg_ctc.gop
 
 python gop_ctc_align_forCE.py ./transcriptions/cmu.ctm ./models/wav2vec2_phoneme_ce/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ce/ ./out-gops/cmu_ctc_align_CE.gop
+
+python gop_ali_free_giamp_v5_normnew.py ./transcriptions/cmu.ctm ./out-models/rCTC-large-from-CTC/checkpoint-6500/  data-new/data-for-w2v2/cmu-kids/metadata.csv ./out-models/rCTC-large-from-CTC/processor_config_gop/ ./test-gop-normnew/test

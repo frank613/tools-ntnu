@@ -88,7 +88,6 @@ def ctc_loss_num(params, seq, blank=0):
     Returns objective, alphas and betas.
     """
     seqLen = seq.shape[0] # Length of label sequence (# phones)
-    numphones = params.shape[0] # Number of labels
     L = 2*seqLen + 1 # Length of label sequence with blanks
     T = params.shape[1] # Length of utterance (time)
 
@@ -127,7 +126,7 @@ def ctc_loss_num(params, seq, blank=0):
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if torch.count_nonzero(in_alphas[s,t]) > 1:
+    if in_alphas[s,t].sum() > 0:
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
@@ -317,7 +316,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=15) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=5) 
     
     print("done")
     

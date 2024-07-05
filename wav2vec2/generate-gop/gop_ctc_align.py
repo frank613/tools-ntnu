@@ -26,6 +26,9 @@ spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
+#RE for CMU-kids
+re_uttid_raw = re.compile(r'(.*)\.(.*$)')
+
 
 def writes(gops_list, outFile):
     os.makedirs(os.path.dirname(outFile), exist_ok=True)
@@ -53,30 +56,34 @@ def read_trans(trans_path):
     return trans_map 
 
 
-def load_dataset_local_from_dict(folder_path):
-    datadict = {"audio": []}  
-    #with open(folder_path + '/metadata.csv') as csvfile:
-    with open(csv_path) as csvfile:
-        next(csvfile)
-        for row in csvfile:
-            #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
-            datadict["audio"].append(row.split(',')[0])
-    ds = datasets.Dataset.from_dict(datadict) 
-    ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+def load_dataset_local_from_dict(csv_path, cache_additional):
+    cache_full_path = os.path.join(ds_cache_path, cache_additional)
+    if not os.path.exists(cache_full_path):
+        datadict = {"audio": []}  
+        #with open(folder_path + '/metadata.csv') as csvfile:
+        with open(csv_path) as csvfile:
+            next(csvfile)
+            for row in csvfile:
+                #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
+                datadict["audio"].append(row.split(',')[0])
+        ds = datasets.Dataset.from_dict(datadict) 
+        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
+        ds.save_to_disk(cache_full_path)
+    ds = datasets.Dataset.load_from_disk(cache_full_path)
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
         batch["p_text"] = []
-        batch["id"] = [re_uttid.match(item["path"])[2] for item in batch["audio"]]
+        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
         for uid in batch["id"]:
             if uid not in uttid_list:
                 batch["p_text"].append(None)
             else:
                 batch["p_text"].append(tran_map[uid])
         return batch
-
     ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
     ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=3)
+    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
 
     return ds_filtered
 
@@ -187,7 +194,7 @@ if __name__ == "__main__":
     model.eval()
    
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path)
+    ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
     #cuda = torch.device('cuda:1')
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens - sil_tokens
@@ -227,7 +234,7 @@ if __name__ == "__main__":
                 l_new = int((state - 1)/2) 
                 if state != last_state:
                     if post_count != 0: ##previous state is not blank, token->blank or token1->token2
-                        gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), post_total/post_count))
+                        gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count)))
                         post_count = 0
                         post_total = 0
                     #else: # blank->token
@@ -237,7 +244,7 @@ if __name__ == "__main__":
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.exp(post_total/post_count)))
+                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count)))
             gops_list.append((row['id'], gop_list))
  
        

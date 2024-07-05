@@ -123,7 +123,7 @@ def ctc_loss(params, seq, blank=0):
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if torch.count_nonzero(in_alphas[s,t]) > 1:
+    if in_alphas[s,t].sum() > 0:
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
@@ -158,8 +158,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     # Initialize alphas 
     if pos == 0:
         alphas[0,0,0] = params[blank,0]
-        # can totally skip the pos
-        alphas[2,0,0] = params[blank,0]
+        # in this version we don't allow initial with the second blank,  it will simplifiy the later computation especially for the “normalized” version
+        alphas[2,0,0] = 0
         alphas[3,0,0] = params[seq[1],0]
         
         alphas[1,0] = params[0:,0]  #an list all tokens
@@ -180,14 +180,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:
                     sum = check_arbitrary(alphas, s-1, t-1, [blank]) 
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
-                        if t == 1: 
-                            # only pos == 1, or s == 2 is affected
-                            removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
-                        else: 
-                            removed = alphas[s,t-1,0] 
-                        ## we now strictly allow the blank state can be used only for aribitrary state exit, not for skip paths 
-                        alphas[s,t,0] = (removed + sum) * params[blank,t]
-        
+                        ##in this version no need to remove for t=1, because state 2 is not initialized anymore
+                        alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -203,16 +197,13 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:
                     skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
                 ##we allow skip empty in this version, following the graph in the paper. No need to remove because the state[s-1] is blocked for skip.
-                if t == 1: ## dont allow empty skip
-                    skip_empty = 0
-                else:
-                    skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
+                ##also we allow skip empty because we removed the state 2 probability in intialization
+                skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
                 alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths       
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
                     empty_prob = alphas[s-1,t-1,0] * params[:,t]
                     empty_prob[0] = 0
-
                     alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + empty_prob
                 else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. 
                     skip_prob = alphas[s-2,t-1,0] * params[:,t]  
@@ -236,6 +227,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
+    if row["id"] != "facs2ap2":
+        return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -280,7 +273,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds = load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=20) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=1) 
     
     print("done")
     

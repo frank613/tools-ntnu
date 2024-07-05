@@ -238,17 +238,17 @@ if __name__ == "__main__":
     
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
     count = 0
-    target = 0
-    #target = "fabm2at1"
+    #target = 0
+    target = "facs2ap2"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  
         for row in ds:
-            if count != target:
-                count += 1
-                continue
-            #if row['id'] != target:
+            #if count != target:
+            #    count += 1
             #    continue
+            if row['id'] != target:
+                continue
             if row['id'] not in uttid_list:
                 print("ignore uttid: " + row['id'] + ", no alignment can be found")
                 continue

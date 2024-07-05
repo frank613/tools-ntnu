@@ -179,7 +179,7 @@ if __name__ == "__main__":
             for order, (pid,start_idx, end_idx) in enumerate(pid_seq):
                 length_seg = end_idx - start_idx
                 post_avg = post_mat[start_idx:end_idx][:,pid].mean()
-                gops_list[len(key_list)-1].append((p_tokenizer._convert_id_to_token(pid), torch.exp(post_avg)))   
+                gops_list[len(key_list)-1].append((p_tokenizer._convert_id_to_token(pid), torch.log(post_avg)))   
        
 
     print("done with GOP computation")

@@ -28,6 +28,8 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
+nan_underflow = 1e-50
+
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
     
@@ -117,11 +119,15 @@ def ctc_loss(params, seq, blank=0):
             else:
                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                     * params[seq[l],t]
+                                
+        # alpha_bar[t] = torch.sum(alphas[:,t])
+        # min_mask = (alphas[:, t] <= nan_underflow).logical_and(alphas[:, t] != 0)
+        # alphas[:,t][min_mask] = nan_underflow
+        #alphas[:,t] = alphas[:,t] / torch.sum(alphas[:,t])
         alpha_bar[t] = torch.sum(alphas[:,t])
         alphas[:,t] = alphas[:,t] / alpha_bar[t]
     
     llForward = torch.log(alpha_bar).sum()   
-	
     return -llForward
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
@@ -151,8 +157,6 @@ def check_arbitrary(in_alphas, s, t, zero_pos=[]):
 
 ##we need to remove the duplication for the "arbitrary" state
 def get_alpha_bar(alphas, t, blank, pos, next_label):
-    #if pos == 9 and t == 75:
-    #   pdb.set_trace()
     arbitrary_state = 2*pos + 1 
     alpha_mask = torch.ones(alphas.shape[2], dtype=torch.bool)
     alpha_mask[blank] = False  ## the same as the next blank state, so we remove
@@ -189,14 +193,14 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     # Initialize alphas 
     if pos == 0:
         alphas[0,0,0] = params[blank,0]
-        # can totally skip the pos
-        alphas[2,0,0] = params[blank,0]
+        # can totally skip the pos, in this version we remove the initialization of state 2
+        alphas[2,0,0] = 0
         alphas[3,0,0] = params[seq[1],0]
         
         alphas[1,0] = params[0:,0]  #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
         ## remove the prob for state 0 from alpha_bar (do not do it for alpha!!), because it's the same at the initial state
-        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx) - alphas[0,0,0] 
+        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx)
 
     else:
         alphas[0,0,0] = params[blank,0]
@@ -219,13 +223,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:
                     sum = check_arbitrary(alphas, s-1, t-1, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
-                        if t == 1: 
-                            # only pos == 1, or s == 2 is affected
-                            removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
-                        else: 
-                            removed = alphas[s,t-1,0] 
-                        ## we now strictly allow the blank state can be used only for aribitrary state exit, not for skip paths 
-                        alphas[s,t,0] = (removed + sum) * params[blank,t]
+                        ##in this version no need to remove for t=1, because state 2 is not initialized anymore
+                        alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -241,10 +240,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 else:
                     skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
                 ##we allow skip empty in this version, following the graph in the paper. No need to remove because the state[s-1] is blocked for skip.
-                if t == 1: ## dont allow empty skip
-                    skip_empty = 0
-                else:
-                    skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
+                ##also we allow skip empty because we removed the state 2 probability in intialization
+                skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
                 alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths    
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
@@ -265,17 +262,23 @@ def ctc_loss_denom(params, seq, pos, blank=0):
             
                 
         alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, next_label_idx)
-        alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]  
-    
-    llForward = torch.log(alpha_bar).sum()   
+        #underflow might happen
+        if (alphas[:, t] < nan_underflow).logical_and(alphas[:, t] != 0).sum() > 0:
+            zero_mask = alphas[:, t] != 0
+            alphas[:,t,:][zero_mask] += nan_underflow
+            alphas[:,t,:] = alphas[:,t,:] / get_alpha_bar(alphas, t, blank, pos, next_label_idx)
+        else:
+            alphas[:,t,:] = alphas[:,t,:] /  alpha_bar[t]
+        
+    llForward = torch.log(alpha_bar).sum()     
     return -llForward
 
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
-    if row["id"] != "facs2ap2":
+    #if row["id"] != "facs2ap2":
     #if row["id"] != "fabm2a2":
-        return
+    #    return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -292,8 +295,6 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         #step 2, compute the GOP
         pids = labels.tolist()
         for i,pid in enumerate(pids):
-            if i == 12:
-                pdb.set_trace()
             ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
             gop = -ll_self + ll_denom
             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
@@ -322,7 +323,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=1) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=5) 
     
     print("done")
     
