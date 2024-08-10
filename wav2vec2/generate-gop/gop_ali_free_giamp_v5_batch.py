@@ -21,6 +21,7 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
+PAD_SIL_TOKEN = "SIL"
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -30,8 +31,9 @@ re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
-    
-def read_trans(trans_path):
+ 
+#pad_sil_token on begin and end of the sequence if not None   
+def read_trans(trans_path, pad_sil_token=None):
     trans_map = {}
     cur_uttid = ""
     with open(trans_path, "r") as ifile:
@@ -40,11 +42,20 @@ def read_trans(trans_path):
             if len(items) != 5:
                 sys.exit("input trasncription file must be in the Kaldi CTM format")
             if items[0] != cur_uttid and items[0] not in trans_map: 
+                if pad_sil_token: ##add SIL at the begining and end of the sequence 
+                    if cur_uttid != "":
+                        trans_map[cur_uttid].append(pad_sil_token)
+                    cur_uttid = items[0]
+                    trans_map[cur_uttid] = [pad_sil_token]
+                else:
+                    cur_uttid = items[0]
+                    trans_map[cur_uttid] = []
                 cur_uttid = items[0]
-                trans_map[cur_uttid] = []
             phoneme = re_phone.match(items[4]).group(1)                
             if phoneme not in (sil_tokens | spec_tokens):
                 trans_map[cur_uttid].append(phoneme)
+    if pad_sil_token and trans_map[cur_uttid][-1] != pad_sil_token:
+        trans_map[cur_uttid].append(pad_sil_token)
     return trans_map 
 
 
@@ -148,9 +159,9 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     T = params.shape[1] # Length of utterance (time)
     P = params.shape[0] # number of tokens    
 
-    ## constraint mask for disabling insertion
+    ## constraint mask for disabling insertion, and in this version we don't allow phoneme->blank but remains in the arbitrary state 
     mask_ins = torch.eye(P)
-    mask_ins[blank,:] = torch.ones(P)
+    #mask_ins[blank,:] = torch.ones(P)
     
     ##extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
@@ -169,8 +180,11 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alphas[1,0,0] = params[seq[0],0]
         
     for t in range(1,T):
-        ###different from v3, +1 below for possible skip paths at the final states
-        start = max(0,L-2*(T-t+1)) 
+        if pos == seqLen-1: ###different from non-composed one, +1 below for possible skip paths at the final states
+            lowest_state = L-2*(T-t+1)
+        else:
+            lowest_state = L-2*(T-t)
+        start = max(0,lowest_state) 
         for s in range(start,L):
             l = int((s-1)/2)
             # blank
@@ -215,10 +229,9 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 
                     alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob
          
-    sum = check_arbitrary(alphas, L-2, T-1)    
-    if sum: # last label is arbitrary, inlcludes empty as well so we don't need the last term alphas[L-1,T-1,0], but we need the skip path alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0]
-        #no need explictly the alphas of T-2 for skip now because in this version we extendted the valid states at time T-1
-        llForward = torch.log(sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
+    sum = check_arbitrary(alphas, L-2, T-1, [blank])    
+    if sum: # last label is arbitrary,  we need the skip path alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0]
+        llForward = torch.log(alphas[L-1, T-1, 0] + sum + alphas[L-3, T-1, 0] + alphas[L-4, T-1, 0])
     else:
         llForward = torch.log(alphas[L-1, T-1, 0] + alphas[L-2, T-1, 0])
 
@@ -227,8 +240,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
-    if row["id"] != "facs2ap2":
-        return
+    # if row["id"] != "facs2ap2":
+    #     return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -255,26 +268,30 @@ def single_process(example, p_tokenizer, processor, model, out_path):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
-        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
-    #step 0, read the files
-    tran_map = read_trans(sys.argv[1]) 
-    uttid_list = tran_map.keys()
+    if len(sys.argv) != 7:
+        sys.exit("this script takes 6 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <SIL-token> <out-file>.\n \
+        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv. SIL indicates the token used for pad the SIL at the BOS/EOS")  
     # load the pretrained model and data
+    tran_path = sys.argv[1]
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
+    sil_token = sys.argv[5]
  
+    #step 0, read the files
+    if sil_token == PAD_SIL_TOKEN:
+        tran_map = read_trans(tran_path, pad_sil_token=PAD_SIL_TOKEN) 
+    else:
+        tran_map = read_trans(tran_path) 
+    uttid_list = tran_map.keys()
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
     model.eval()
 
     # load dataset and read soundfiles
-    ds = load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=1) 
-    
+    ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[6]}, num_proc=10) 
     print("done")
     
     

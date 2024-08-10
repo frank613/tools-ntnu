@@ -7,7 +7,7 @@ import json
 import pandas as pd
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 import datasets
-from transformers.models.wav2vec2 import Wav2Vec2ForCTC
+from transformers.models.wav2vec2 import Wav2Vec2ForCTC_Circular
 from my_w2v2_package.custom_processor import My_Wav2Vec2Processor
 import torch
 from pathlib import Path
@@ -28,8 +28,6 @@ noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
-
-#RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
 ##segmentation, new phonemes are annotated as "_#", also return raw phoneme seq without SPN and SIL
@@ -229,7 +227,7 @@ if __name__ == "__main__":
     prep_path = sys.argv[4]
  
     processor = My_Wav2Vec2Processor.from_pretrained(prep_path) 
-    model = Wav2Vec2ForCTC.from_pretrained(model_path)
+    model = Wav2Vec2ForCTC_Circular.from_pretrained(model_path)
     model.eval()
 
     # load dataset and read soundfiles
@@ -239,7 +237,6 @@ if __name__ == "__main__":
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
     count = 0
     #target = 0
-    #target = "facs2ap2"
     target = "fabm2aa1"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
@@ -269,6 +266,8 @@ if __name__ == "__main__":
             #raw_seq.pop(2)
             ##simulated deletion
             #raw_seq.insert(3, "P")
+            ##add SIL
+            raw_seq = [sil_token] + raw_seq + [sil_token] 
             pid_seq = processor.tokenizer.convert_tokens_to_ids(raw_seq)
             ##run viterbi
             pointers = get_ali_pointers(post_mat.transpose(0,1), pid_seq)

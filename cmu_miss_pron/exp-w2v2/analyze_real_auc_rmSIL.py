@@ -102,7 +102,7 @@ def labelError(GOP_file, error_list, tran_file):
     out_form["summary"]["average-std"]=total_std/num_phonemes
     out_form["summary"]["average-AUC"]=total_auc/num_phonemes
 
-    return out_form
+    return out_form,out_form["summary"]["average-AUC"]
 
 
 
@@ -162,8 +162,10 @@ if __name__ == "__main__":
                 if len(fields) != 1:
                     sys.exit("wrong input line")
                 utt_list.append(fields[0])
-    json_dict = labelError(sys.argv[1], utt_list, sys.argv[3])
+    json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3])
     os.makedirs(os.path.dirname(sys.argv[4]), exist_ok=True)
     with open(sys.argv[4], "w") as f:
         json.dump(json_dict, f)
+
+    print(f'The avg AUC: {avg_auc}')
 

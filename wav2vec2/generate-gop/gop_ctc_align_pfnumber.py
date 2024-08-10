@@ -22,7 +22,6 @@ re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 #spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil","SIL","SPN"])
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
-PAD_SIL_TOKEN = "SIL"
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -36,12 +35,11 @@ def writes(gops_list, outFile):
     with open(outFile, 'w') as fw:
         for key, gop_list in gops_list:
             fw.write(key+'\n')
-            for cnt, (p,score) in enumerate(gop_list):
-                fw.write("%d %s %.3f\n"%(cnt, p, score))
+            for cnt, (p, score, fcount) in enumerate(gop_list):
+                fw.write("%d %s %.3f %d\n"%(cnt, p, score, fcount))
             fw.write("\n")
     
-#pad_sil_token on begin and end of the sequence if not None   
-def read_trans(trans_path, pad_sil_token=None):
+def read_trans(trans_path):
     trans_map = {}
     cur_uttid = ""
     with open(trans_path, "r") as ifile:
@@ -50,19 +48,13 @@ def read_trans(trans_path, pad_sil_token=None):
             if len(items) != 5:
                 sys.exit("input trasncription file must be in the Kaldi CTM format")
             if items[0] != cur_uttid and items[0] not in trans_map: 
-                if pad_sil_token: ##add SIL at the begining and end of the sequence 
-                    if cur_uttid != "":
-                        trans_map[cur_uttid].append(pad_sil_token)
-                    cur_uttid = items[0]
-                    trans_map[cur_uttid] = [pad_sil_token]
-                else:
-                    cur_uttid = items[0]
-                    trans_map[cur_uttid] = []
                 cur_uttid = items[0]
-            phoneme = re_phone.match(items[4]).group(1)                
+                trans_map[cur_uttid] = []
+            phoneme = re_phone.match(items[4]).group(1)
             if phoneme not in (sil_tokens | spec_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
+
 
 def load_dataset_local_from_dict(csv_path, cache_additional):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -185,22 +177,17 @@ def get_backtrace_path(pointers):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 7:
-        sys.exit("this script takes 6 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <SIL-token> <out-file>.\n \
-            , it analyzes the GOP using the ctc-align methods, the csv path must be a folder containing audios files and the metadata.csv. SIL indicates the token used for pad the SIL at the BOS/EOS") 
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
+            , it analyzes the GOP using the ctc-align methods, the csv path must be a folder containing audios files and the metadata.csv") 
     #step 0, read the files
-    tran_path = sys.argv[1]
+    tran_map = read_trans(sys.argv[1]) 
+    uttid_list = tran_map.keys()
+    # load the pretrained model and data
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
-    sil_token = sys.argv[5]
  
-    #step 0, read the files
-    if sil_token == PAD_SIL_TOKEN:
-        tran_map = read_trans(tran_path, pad_sil_token=PAD_SIL_TOKEN) 
-    else:
-        tran_map = read_trans(tran_path) 
-    uttid_list = tran_map.keys()   
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     model = Wav2Vec2ForCTC.from_pretrained(model_path)
@@ -247,7 +234,7 @@ if __name__ == "__main__":
                 l_new = int((state - 1)/2) 
                 if state != last_state:
                     if post_count != 0: ##previous state is not blank, token->blank or token1->token2
-                        gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count)))
+                        gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count), post_count))
                         post_count = 0
                         post_total = 0
                     #else: # blank->token
@@ -257,13 +244,13 @@ if __name__ == "__main__":
                 last_state = state
             if post_count != 0:
                 l = int((last_state - 1)/2)
-                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count)))
+                gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count), post_count))
             gops_list.append((row['id'], gop_list))
  
        
 
     print("done with GOP computation")
-    writes(gops_list, sys.argv[6])
+    writes(gops_list, sys.argv[5])
             
     
 

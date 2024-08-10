@@ -1,4 +1,5 @@
 import os,sys,pdb,re,json
+import shutil
 import torch
 import datasets
 import numpy as np
@@ -9,7 +10,7 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC, TrainingArguments, T
 from pathlib import Path
 import pandas as pd
 from my_w2v2_package.custom_processor import My_Wav2Vec2CTCTokenizer,My_Wav2Vec2Processor
-from my_w2v2_package.custom_CTC_module import Wav2Vec2ForRCTC
+from my_w2v2_package.custom_CTC_module import Wav2Vec2ForEBBCTC
 
 
 
@@ -21,6 +22,7 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
+PAD_SIL_TOKEN = "SIL"
 #RE for filenames
 re_uttid = re.compile(r'(.*/)*(.*)\.(.*$)')
 
@@ -86,7 +88,8 @@ class DataCollatorCTCWithPadding:
 
         return batch
 
-def read_trans(trans_path):
+####In this version, keep the SIL at the begining and end of the sequence
+def read_trans(trans_path, pad_sil_token):
     trans_map = {}
     cur_uttid = ""
     with open(trans_path, "r") as ifile:
@@ -94,12 +97,17 @@ def read_trans(trans_path):
             items = line.strip().split()
             if len(items) != 5:
                 sys.exit("input trasncription file must be in the Kaldi CTM format")
-            if items[0] != cur_uttid and items[0] not in trans_map: 
+            if items[0] != cur_uttid and items[0] not in trans_map:
+                ##add SIL at the begining and end of the sequence 
+                if cur_uttid != "":
+                    trans_map[cur_uttid].append(pad_sil_token)
                 cur_uttid = items[0]
-                trans_map[cur_uttid] = []
+                trans_map[cur_uttid] = [pad_sil_token]
             phoneme = re_phone.match(items[4]).group(1)                
             if phoneme not in (sil_tokens | spec_tokens):
                 trans_map[cur_uttid].append(phoneme)
+    if trans_map[cur_uttid][-1] != pad_sil_token:
+        trans_map[cur_uttid].append(pad_sil_token)
     return trans_map 
 
 def extract_all_phonemes(batch):
@@ -207,8 +215,8 @@ if __name__ == "__main__":
     csv_path_dev = sys.argv[5]
     out_path = sys.argv[6]
     #step 1, load the dataset
-    tran_map_train = read_trans(tran_path_train)
-    tran_map_dev = read_trans(tran_path_dev)
+    tran_map_train = read_trans(tran_path_train, pad_sil_token=PAD_SIL_TOKEN)
+    tran_map_dev = read_trans(tran_path_dev, pad_sil_token=PAD_SIL_TOKEN)
     uttid_list_train = tran_map_train.keys()
     uttid_list_dev = tran_map_dev.keys()  
     
@@ -220,17 +228,23 @@ if __name__ == "__main__":
     #Howeverm the ctc-tokenizer needs to be created
     feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
 
-    #vocabs = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True,  
-    #        remove_columns=train_ds.column_names["train"])
-    vocabs_train = train_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
-    vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
-    vocab_list = list(set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0]))
-    #vocab_list = list(set(vocabs_dev["vocab"][0]))
-    vocab_list = sorted(vocab_list)
-    vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)} 
-    vocab_dict["<pad>"] = 0
-    with open(out_path + '/vocab.json', 'w') as vocab_file:
-        json.dump(vocab_dict, vocab_file)
+    #prepare the vocabs
+    model_vocab_path = model_path + '/vocab.json'
+    out_vocab_path = out_path + '/vocab.json'
+    if os.path.isfile(model_vocab_path):
+        shutil.copy(model_vocab_path, out_vocab_path)
+    else:    
+        #vocabs = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True,  
+        #        remove_columns=train_ds.column_names["train"])
+        vocabs_train = train_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
+        vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
+        vocab_list = list((set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0])) - set([PAD_SIL_TOKEN]))
+        vocab_list = sorted(vocab_list)
+        vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)} 
+        vocab_dict["<pad>"] = 0
+        vocab_dict[PAD_SIL_TOKEN] = len(vocab_dict)
+        with open(out_vocab_path, 'w') as vocab_file:
+            json.dump(vocab_dict, vocab_file)
     print("vocabs prepared")
     #tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     #config = AutoConfig.from_pretrained(model_path)
@@ -257,12 +271,13 @@ if __name__ == "__main__":
     #dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
     print("datasets prepared")
     #step 4, fine-tune the model, the datacollator does the padding.
-    model = Wav2Vec2ForRCTC.from_pretrained(
+    model = Wav2Vec2ForEBBCTC.from_pretrained(
         model_path, 
         #ctc_loss_reduction="mean", 
-        pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(vocab_dict)
+        pad_token_id=tokenizer.pad_token_id,
+        vocab_size=tokenizer.vocab_size
     )
+    pdb.set_trace()
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     model.freeze_feature_extractor()
     

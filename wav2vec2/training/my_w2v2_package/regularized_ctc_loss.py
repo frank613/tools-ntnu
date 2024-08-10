@@ -178,6 +178,7 @@ def reg_ctc_loss_log(pred, pred_len, token, token_len, blank=0):
     cost = -labels_prob
     return cost
 
+##regurlarize the transition from blank to blank = 0 and nob means no jump from token to token without passing through a blank
 def reg_ctc_loss_nob_log(pred, pred_len, token, token_len, blank=0):
     '''
     :param pred: (Time, batch, voca_size+1)
@@ -251,6 +252,58 @@ def reg_ctc_loss_sil_log(pred, pred_len, token, token_len, blank=0, sil_token=-1
     # recurrence relation
     sec_diag = T.cat((T.zeros((batch, 2)).type(floatX), T.ne(token_with_blank[:, :-2], token_with_blank[:, 2:]).type(floatX)), dim=1) * T.ne(token_with_blank, blank).type(floatX)	# (batch, 2U+1)
     recurrence_relation = (m_eye(length) + m_eye(length, k=1)).repeat(batch, 1, 1) + m_eye(length, k=2).repeat(batch, 1, 1) * sec_diag[:, None, :]	# (batch, 2U+1, 2U+1)
+    # regulariztion
+    reg_mat = regularized_eye(length)
+    recurrence_relation = recurrence_relation * reg_mat
+    recurrence_relation = eps_nan * (T.ones_like(recurrence_relation) - recurrence_relation)
+
+    # alpha
+    alpha_t = T.cat((pred[0, :, :2], T.ones(batch, 2*U-1).type(floatX)*eps_nan), dim=1) # (batch, 2U+1)
+    probability = alpha_t[None] # (1, batch, 2U+1)
+    # dynamic programming
+    # (T, batch, 2U+1)
+    for t in T.arange(1, Time).type(longX):
+        alpha_t = log_batch_dot(alpha_t, recurrence_relation) + pred[t]
+        probability = T.cat((probability, alpha_t[None]), dim=0)
+
+    labels_2 = probability[pred_len-1, T.arange(batch).type(longX), 2*token_len-1]
+    labels_1 = probability[pred_len-1, T.arange(batch).type(longX), 2*token_len]
+    labels_prob = log_sum_exp(labels_2, labels_1)
+#     pdb.set_trace()
+
+    cost = -labels_prob
+    return cost
+
+#added SIL to nob version of rCTC
+def reg_ctc_loss_nob_sil_log(pred, pred_len, token, token_len, blank=0, sil_token=-1):
+    '''
+    :param pred: (Time, batch, voca_size+1)
+    :param pred_len: (batch)
+    :param token: (batch, U)
+    :param token_len: (batch)
+    '''
+    assert(sil_token > 0)
+    Time, batch = pred.size(0), pred.size(1)
+    U = token.size(1)
+    eps_nan = -1e8
+
+    #token with sil:
+    token_with_sil = T.cat((T.full((batch,1), sil_token).type(longX), token), dim=1) #(batch, U+1)
+    token_with_sil = T.cat((token_with_sil, T.full((batch,1), blank).type(longX)), dim=1) #(batch, U+2)
+    U = U + 2
+    index1 = T.arange(batch)
+    index2 = token_len + 1
+    token_with_sil[index1, index2] = sil_token
+    token = token_with_sil
+    # token_with_blank
+    token_with_blank = T.cat((T.zeros(batch, U, 1).type(longX), token[:, :, None]), dim=2).view(batch, -1)    # (batch, 2U)
+    token_with_blank = T.cat((token_with_blank, T.zeros(batch, 1).type(longX)), dim=1)  # (batch, 2U+1)
+    length = token_with_blank.size(1)
+
+    pred = pred[T.arange(0, Time).type(longX)[:, None, None], T.arange(0, batch).type(longX)[None, :, None], token_with_blank[None, :]]  # (T, batch, 2U+1)
+
+    # recurrence relation, no jump from token to token is allowed. 
+    recurrence_relation = (m_eye(length) + m_eye(length, k=1)).repeat(batch, 1, 1)
     # regulariztion
     reg_mat = regularized_eye(length)
     recurrence_relation = recurrence_relation * reg_mat
@@ -348,3 +401,28 @@ def reg_ctc_sil_cost(out, targets, sizes, target_sizes, sil_token):
         costs = reg_ctc_loss_sil_log(pred, sizes.data.type(longX), target, target_sizes.data.type(longX), sil_token=sil_token)
     return costs.sum()
 
+def reg_ctc_nb_sil_cost(out, targets, sizes, target_sizes, sil_token):
+#    A batched version for uni_alpha_cost
+#    param out: (Time, batch, voca_size+1)
+#    param targets: targets without splited
+#    param sizes: size for out (N)
+#    param target_sizes: size for targets (N)
+    Time = out.size(0)
+    pred = out # ----- svail ------ input is already log_softmax (log prob)
+
+    offset = 0
+    batch = target_sizes.size(0)
+    target_max = target_sizes.max().item()
+    target = T.zeros(batch, target_max).type(longX)
+
+    for index, (target_size, size) in enumerate(zip(target_sizes, sizes)):
+        target[index, :target_size.item()] = targets[offset: offset+target_size.item()].data
+        offset += target_size.item()
+
+    if not cuda:
+        costs = reg_ctc_loss_nob_sil_log(pred.cpu(), sizes.data.type(longX), target, target_sizes.data.type(longX), sil_token=sil_token)
+    else:
+        costs = reg_ctc_loss_nob_sil_log(pred, sizes.data.type(longX), target, target_sizes.data.type(longX), sil_token=sil_token)
+    return costs.sum()
+    
+    

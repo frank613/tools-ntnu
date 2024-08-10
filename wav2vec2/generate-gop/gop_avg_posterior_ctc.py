@@ -23,6 +23,7 @@ re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 #spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 blank_token = "<pad>"
 sil_tokens = set(["sil","SIL","SPN"])
+PAD_SIL_TOKEN = "SIL"
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -60,7 +61,7 @@ def writes(gop_list, key_list, outFile):
                 fw.write("%d %s %.3f\n"%(cnt, p, score))
             fw.write("\n")
 
-def read_align(align_path):
+def read_align(align_path, pad_sil_token=None):
     utt_list =[]
     with open(align_path, "r") as ifile:
         ##to mark different phonemes: e.g "T" in " went to"
@@ -137,16 +138,23 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <cano-alignment file> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <out-file>.\n \
-        , it generates the GOP using average posterior of the phoenme recognizer layer of fine-tuned w2v2 model, the csv path must be a folder containing audios files and the csv") 
+    if len(sys.argv) != 7:
+        sys.exit("this script takes 6 arguments <cano-alignment file> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessr-dir> <SIL-token> <out-file>.\n \
+        , it generates the GOP using average posterior of the phoenme recognizer layer of fine-tuned w2v2 model, the csv path must be a folder containing audios files and the csv. SIL indicates the token used for pad the SIL at the BOS/EOS")  
     #step 0, read the files
-    ali_df = read_align(sys.argv[1]) 
-    uttid_list = ali_df['uttid'].unique()
-    # load the pretrained model and data
+    align_path = sys.argv[1]
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
+    sil_token = sys.argv[5]
+    
+    #step 0, read the files
+    if sil_token == PAD_SIL_TOKEN:
+        ali_df = read_align(align_path, pad_sil_token=PAD_SIL_TOKEN) 
+    else:
+        ali_df = read_align(align_path) 
+    uttid_list = ali_df['uttid'].unique()
+   
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
@@ -188,7 +196,7 @@ if __name__ == "__main__":
        
 
     print("done with GOP computation")
-    writes(gops_list, key_list, sys.argv[5])
+    writes(gops_list, key_list, sys.argv[6])
 
 
 

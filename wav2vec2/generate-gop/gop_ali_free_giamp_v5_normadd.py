@@ -199,7 +199,6 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         
         alphas[1,0] = params[0:,0]  #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
-        ## remove the prob for state 0 from alpha_bar (do not do it for alpha!!), because it's the same at the initial state
         alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx)
 
     else:

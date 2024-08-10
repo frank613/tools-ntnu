@@ -29,6 +29,8 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 
+eps_nan = -1e8
+
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
     
@@ -57,6 +59,7 @@ def read_trans(trans_path, pad_sil_token=None):
     if pad_sil_token and trans_map[cur_uttid][-1] != pad_sil_token:
         trans_map[cur_uttid].append(pad_sil_token)
     return trans_map 
+
 
 def load_dataset_local_from_dict(csv_path, cache_additional):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -101,8 +104,8 @@ def ctc_loss(params, seq, blank=0):
     L = 2*seqLen + 1 # Length of label sequence with blanks
     T = params.shape[1] # Length of utterance (time)
 
-    alphas = torch.zeros((L,T)).double()
-    alpha_bar = torch.zeros(T).double()
+    alphas = torch.zeros((L,T))
+    alpha_bar = torch.zeros(T)
 
     # Initialize alphas and forward pass 
     alphas[0,0] = params[blank,0]
@@ -129,7 +132,7 @@ def ctc_loss(params, seq, blank=0):
                     * params[seq[l],t]
         alpha_bar[t] = torch.sum(alphas[:,t])
         alphas[:,t] = alphas[:,t] / alpha_bar[t]
-    
+   
     llForward = torch.log(alpha_bar).sum()   
 	
     return -llForward
@@ -137,6 +140,7 @@ def ctc_loss(params, seq, blank=0):
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 ##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
+    ##check if any probability is non-zero in the arbitrary state
     if in_alphas[s,t].sum() > 0:
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
@@ -188,8 +192,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     #mask_ins[blank,:] = torch.ones(P)
     
     ##extend the tensor to save "arbitrary state"
-    alphas = torch.zeros((L,T,P)).double()
-    alpha_bar = torch.zeros(T).double()
+    alphas = torch.zeros((L,T,P))
+    alpha_bar = torch.zeros(T)
     
     if pos == seqLen - 1:
         next_label_idx = None
@@ -206,12 +210,11 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alphas[1,0] = params[0:,0]  #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
         alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx)
-
     else:
         alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
         alpha_bar[0] =  alphas[0,0,0] + alphas[1,0,0]
-        
+
     alphas[:,0,:] = alphas[:,0,:] /  alpha_bar[0]
     
     for t in range(1,T):
@@ -264,20 +267,18 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     empty_prob[blank] = 0
 
                     alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob
-            
-                
+                   
         alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, next_label_idx)
-        alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]  
-    
+        alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
+
     llForward = torch.log(alpha_bar).sum()   
     return -llForward
 
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
-    #if row["id"] != "facs2ap2":
-    #if row["id"] != "fabm2a2":
-    #    return
+    # if row["id"] != "facs2ap2":
+    #     return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -289,13 +290,11 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         ##return the log_like to check the correctness of our function
         return_dict = model(input_values, labels = labels)
         logits = return_dict["logits"].squeeze(0) 
-        post_mat = logits.softmax(dim=-1).type(torch.float64)
+        post_mat = logits.softmax(dim=-1)
         ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
         #step 2, compute the GOP
         pids = labels.tolist()
         for i,pid in enumerate(pids):
-            #if i == 12:
-            #    pdb.set_trace()
             ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
             gop = -ll_self + ll_denom
             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
@@ -307,15 +306,15 @@ if __name__ == "__main__":
 
     print(sys.argv)
     if len(sys.argv) != 7:
-        sys.exit("this script takes 6 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <SIL-token> <out-file>.\n \
-        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv. SIL indicates the token used for pad the SIL at the BOS/EOS")  
-    # load the pretrained model and data
+        sys.exit("this script takes 6 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
+        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
+    #step 0, read the files
     tran_path = sys.argv[1]
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
     sil_token = sys.argv[5]
- 
+    
     #step 0, read the files
     if sil_token == PAD_SIL_TOKEN:
         tran_map = read_trans(tran_path, pad_sil_token=PAD_SIL_TOKEN) 

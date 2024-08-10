@@ -237,7 +237,7 @@ if __name__ == "__main__":
     #p_set = set(p_tokenizer.encoder.keys()) - spec_tokens
     count = 0
     #target = 0
-    target = "fabm2ab2"
+    target = "fabm2aa1"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  

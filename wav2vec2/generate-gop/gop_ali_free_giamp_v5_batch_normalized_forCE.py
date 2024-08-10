@@ -178,14 +178,13 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
     # Initialize alphas 
     if pos == 0:
         alphas[0,0,0] = params[blank,0]
-        # can totally skip the pos
-        alphas[2,0,0] = params[blank,0]
+        # can totally skip the pos, in this version we remove the initialization of state 2
+        alphas[2,0,0] = 0
         alphas[3,0,0] = params[seq[1],0]
         
         alphas[1,0] = params[0:,0] * ce_mask #an list all tokens
         alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
-        ## remove the prob from state 0, because it's the same as state 2 interms of paths
-        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, ce_mask, next_label_idx) - alphas[0,0,0] 
+        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, ce_mask, next_label_idx) 
     else:
         alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
@@ -207,13 +206,8 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
                 else:
                     sum = check_arbitrary(alphas, s-1, t-1, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
-                        if t == 1: 
-                            # only pos == 1, or s == 2 is affected
-                            removed= alphas[s,t-1,0] - alphas[s,t-1,0] ## should be = 0, totally remove the path because it's the same as the skip path
-                        else: 
-                            removed = alphas[s,t-1,0] 
-                        ## we now strictly allow the blank state can be used only for aribitrary state exit, not for skip paths 
-                        alphas[s,t,0] = (removed + sum) * params[blank,t]
+                        ##in this version no need to remove for t=1, because state 2 is not initialized anymore
+                        alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -229,16 +223,13 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
                 else:
                     skip_token = alphas[s-4,t-1,0] * params[seq[l],t]
                 ##we allow skip empty in this version, following the graph in the paper. No need to remove because the state[s-1] is blocked for skip.
-                if t == 1: ## dont allow empty skip
-                    skip_empty = 0
-                else:
-                    skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
-                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token 
+                ##also we allow skip empty because we removed the state 2 probability in intialization
+                skip_empty = alphas[s-3,t-1,0] * params[seq[l],t] 
+                alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + sum ) * params[seq[l],t] + skip_empty + skip_token
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths    
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
                     empty_prob = alphas[s-1,t-1,0] * params[:,t]
                     empty_prob[blank] = 0
-
                     alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + empty_prob) * ce_mask
                     
                 else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. alph
