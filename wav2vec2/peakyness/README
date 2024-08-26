@@ -1,1 +1,3 @@
 python conditioned_entropy.py ./transcriptions/cmu.ctm ./models/ctc-en/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ctc/ ./out-cmu-ctc/test
+
+python compute_per.py ./out-cmu-enCTC-015/all.txt ./transcriptions/label_mapped.txt

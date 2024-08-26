@@ -1,6 +1,7 @@
 import os,sys,pdb,re,json
 import torch
 import datasets
+import shutil
 import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
@@ -9,10 +10,11 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC, TrainingArguments, T
 from pathlib import Path
 import pandas as pd
 from my_w2v2_package.custom_processor import My_Wav2Vec2CTCTokenizer,My_Wav2Vec2Processor
-from my_w2v2_package.custom_CTC_module import Wav2Vec2ForECTC
+from my_w2v2_package.custom_CTC_module import Wav2Vec2ForNOJMIDCTC
+
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
 ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
@@ -22,6 +24,7 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
+PAD_SIL_TOKEN = "SIL"
 #RE for filenames
 re_uttid = re.compile(r'(.*/)*(.*)\.(.*$)')
 
@@ -213,25 +216,32 @@ if __name__ == "__main__":
     uttid_list_train = tran_map_train.keys()
     uttid_list_dev = tran_map_dev.keys()  
     
-    train_ds = load_dataset_local_from_dict(csv_path_train, "train-enCTC", tran_map_train, uttid_list_train)
+    train_ds = load_dataset_local_from_dict(csv_path_train, "train-rCTC", tran_map_train, uttid_list_train)
     #train_ds = load_dataset_local_from_dict(csv_path_dev,tran_map_dev, uttid_list_dev)
-    dev_ds = load_dataset_local_from_dict(csv_path_dev, "dev-enCTC", tran_map_dev, uttid_list_dev)
+    dev_ds = load_dataset_local_from_dict(csv_path_dev, "dev-rCTC", tran_map_dev, uttid_list_dev)
     print("datasets loaded")
     #step 2, define the processor, the feature extractor can be directly loaded 
     #Howeverm the ctc-tokenizer needs to be created
     feature_extractor = AutoFeatureExtractor.from_pretrained(model_path)
 
-    #vocabs = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True,  
-    #        remove_columns=train_ds.column_names["train"])
-    vocabs_train = train_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
-    vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
-    vocab_list = list(set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0]))
-    #vocab_list = list(set(vocabs_dev["vocab"][0]))
-    vocab_list = sorted(vocab_list)
-    vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)} 
-    vocab_dict["<pad>"] = 0
-    with open(out_path + '/vocab.json', 'w') as vocab_file:
-        json.dump(vocab_dict, vocab_file)
+    #prepare the vocabs
+    model_vocab_path = model_path + '/vocab.json'
+    out_vocab_path = out_path + '/vocab.json'
+    if os.path.isfile(model_vocab_path):
+        shutil.copy(model_vocab_path, out_vocab_path)
+        print("using vocabs from the model directory")
+    else:    
+        #vocabs = train_ds.map(extract_all_phonemes, batched=True, atch_size=-1, keep_in_memory=True,  
+        #        remove_columns=train_ds.column_names["train"])
+        vocabs_train = train_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
+        vocabs_dev = dev_ds.map(extract_all_phonemes, batched=True, batch_size=-1, keep_in_memory=True, remove_columns=dev_ds.column_names)
+        vocab_list = list((set(vocabs_train["vocab"][0]) | set(vocabs_dev["vocab"][0])) - set([PAD_SIL_TOKEN]))
+        vocab_list = sorted(vocab_list)
+        vocab_dict = {v : k+1 for k, v in enumerate(vocab_list)} 
+        vocab_dict["<pad>"] = 0
+        with open(out_vocab_path, 'w') as vocab_file:
+            json.dump(vocab_dict, vocab_file)
+        print("using new vocabs")
     print("vocabs prepared")
     #tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
     #config = AutoConfig.from_pretrained(model_path)
@@ -258,12 +268,11 @@ if __name__ == "__main__":
     #dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
     print("datasets prepared")
     #step 4, fine-tune the model, the datacollator does the padding.
-    model = Wav2Vec2ForECTC.from_pretrained(
+    model = Wav2Vec2ForNOJMIDCTC.from_pretrained(
         model_path, 
         #ctc_loss_reduction="mean", 
         pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(vocab_dict),
-        entropy_beta=0.3
+        vocab_size=tokenizer.vocab_size
     )
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     model.freeze_feature_extractor()
@@ -272,7 +281,7 @@ if __name__ == "__main__":
         output_dir=out_path,
         group_by_length=False,
         per_device_train_batch_size=2,
-        gradient_accumulation_steps=16   ,
+        gradient_accumulation_steps=16,
         evaluation_strategy="steps",
         num_train_epochs=10,
         gradient_checkpointing=True,
@@ -283,7 +292,6 @@ if __name__ == "__main__":
         weight_decay=0.005,
         warmup_steps=1000,
         fp16=True,
-        resume_from_checkpoint = True,
         seed=1
     )
     

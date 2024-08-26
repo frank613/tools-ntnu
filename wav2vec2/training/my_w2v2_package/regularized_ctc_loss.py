@@ -1,7 +1,4 @@
 import os
-# os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"   # see issue #152
-# os.environ["CUDA_VISIBLE_DEVICES"]="2"
-
 import torch as T
 from torch.autograd import Variable
 import numpy as np
@@ -32,6 +29,15 @@ def m_eye(n, k=0):
 def regularized_eye(n): ## n is the length of the matrix
     assert n%2 != 0
     index1 = T.arange(0, n, 2)
+    index2 = index1
+    ret = T.ones(n,n).type(floatX)
+    ret[index1,index2] = 0 
+    return ret
+
+#we allow the first ane last pad to repeat, 
+def regularized_eye_mid(n): ## n is the length of the matrix
+    assert n%2 != 0
+    index1 = T.arange(2, n-2, 2)
     index2 = index1
     ret = T.ones(n,n).type(floatX)
     ret[index1,index2] = 0 
@@ -201,6 +207,49 @@ def reg_ctc_loss_nob_log(pred, pred_len, token, token_len, blank=0):
     recurrence_relation = (m_eye(length) + m_eye(length, k=1)).repeat(batch, 1, 1)
     # regulariztion
     reg_mat = regularized_eye(length)
+    recurrence_relation = recurrence_relation * reg_mat
+    recurrence_relation = eps_nan * (T.ones_like(recurrence_relation) - recurrence_relation)
+
+    # alpha
+    alpha_t = T.cat((pred[0, :, :2], T.ones(batch, 2*U-1).type(floatX)*eps_nan), dim=1) # (batch, 2U+1)
+    probability = alpha_t[None] # (1, batch, 2U+1)
+    # dynamic programming
+    # (T, batch, 2U+1)
+    for t in T.arange(1, Time).type(longX):
+        alpha_t = log_batch_dot(alpha_t, recurrence_relation) + pred[t]
+        probability = T.cat((probability, alpha_t[None]), dim=0)
+
+    labels_2 = probability[pred_len-1, T.arange(batch).type(longX), 2*token_len-1]
+    labels_1 = probability[pred_len-1, T.arange(batch).type(longX), 2*token_len]
+    labels_prob = log_sum_exp(labels_2, labels_1)
+#     pdb.set_trace()
+
+    cost = -labels_prob
+    return cost
+
+##same as nob version, but we allow the first and last blank repeats
+def reg_ctc_loss_nob_mid_log(pred, pred_len, token, token_len, blank=0):
+    '''
+    :param pred: (Time, batch, voca_size+1)
+    :param pred_len: (batch)
+    :param token: (batch, U)
+    :param token_len: (batch)
+    '''
+    Time, batch = pred.size(0), pred.size(1)
+    U = token.size(1)
+    eps_nan = -1e8
+
+    # token_with_blank
+    token_with_blank = T.cat((T.zeros(batch, U, 1).type(longX), token[:, :, None]), dim=2).view(batch, -1)    # (batch, 2U)
+    token_with_blank = T.cat((token_with_blank, T.zeros(batch, 1).type(longX)), dim=1)  # (batch, 2U+1)
+    length = token_with_blank.size(1)
+
+    pred = pred[T.arange(0, Time).type(longX)[:, None, None], T.arange(0, batch).type(longX)[None, :, None], token_with_blank[None, :]]  # (T, batch, 2U+1)
+
+    # recurrence relation, no jump from token to token is allowed. 
+    recurrence_relation = (m_eye(length) + m_eye(length, k=1)).repeat(batch, 1, 1)
+    # regulariztion
+    reg_mat = regularized_eye_mid(length)
     recurrence_relation = recurrence_relation * reg_mat
     recurrence_relation = eps_nan * (T.ones_like(recurrence_relation) - recurrence_relation)
 
@@ -425,4 +474,27 @@ def reg_ctc_nb_sil_cost(out, targets, sizes, target_sizes, sil_token):
         costs = reg_ctc_loss_nob_sil_log(pred, sizes.data.type(longX), target, target_sizes.data.type(longX), sil_token=sil_token)
     return costs.sum()
     
-    
+def reg_ctc_nob_mid_cost(out, targets, sizes, target_sizes):
+#    A batched version for uni_alpha_cost
+#    param out: (Time, batch, voca_size+1)
+#    param targets: targets without splited
+#    param sizes: size for out (N)
+#    param target_sizes: size for targets (N)
+
+    Time = out.size(0)
+    pred = out # ----- svail ------ input is already log_softmax (log prob)
+
+    offset = 0
+    batch = target_sizes.size(0)
+    target_max = target_sizes.max().item()
+    target = T.zeros(batch, target_max).type(longX)
+
+    for index, (target_size, size) in enumerate(zip(target_sizes, sizes)):
+        target[index, :target_size.item()] = targets[offset: offset+target_size.item()].data
+        offset += target_size.item()
+
+    if not cuda:
+        costs = reg_ctc_loss_nob_mid_log(pred.cpu(), sizes.data.type(longX), target, target_sizes.data.type(longX))
+    else:
+        costs = reg_ctc_loss_nob_mid_log(pred, sizes.data.type(longX), target, target_sizes.data.type(longX))
+    return costs.sum()

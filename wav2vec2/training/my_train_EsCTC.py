@@ -9,10 +9,10 @@ from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC, TrainingArguments, T
 from pathlib import Path
 import pandas as pd
 from my_w2v2_package.custom_processor import My_Wav2Vec2CTCTokenizer,My_Wav2Vec2Processor
-from my_w2v2_package.custom_CTC_module import Wav2Vec2ForECTC
+from my_w2v2_package.custom_CTC_module import Wav2Vec2ForESCTC
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
 ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
@@ -258,12 +258,10 @@ if __name__ == "__main__":
     #dev_ds = dev_ds.map(prepare_dataset_batch, batched=True, batch_size=100,num_proc=3)
     print("datasets prepared")
     #step 4, fine-tune the model, the datacollator does the padding.
-    model = Wav2Vec2ForECTC.from_pretrained(
+    model = Wav2Vec2ForESCTC.from_pretrained(
         model_path, 
-        #ctc_loss_reduction="mean", 
         pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(vocab_dict),
-        entropy_beta=0.3
+        vocab_size=len(vocab_dict)
     )
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     model.freeze_feature_extractor()
@@ -271,8 +269,8 @@ if __name__ == "__main__":
     training_args = TrainingArguments(
         output_dir=out_path,
         group_by_length=False,
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=16   ,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=32,
         evaluation_strategy="steps",
         num_train_epochs=10,
         gradient_checkpointing=True,

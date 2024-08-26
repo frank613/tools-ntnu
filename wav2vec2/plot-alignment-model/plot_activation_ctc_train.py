@@ -42,9 +42,12 @@ def plot_it(out_file, dict_list):
             p_vec.append(p)
             y_vec.append(pid)
             x_vec.append(s)
+        x_vec.append(e)
+        y_vec.append(pid)
         
         axes[axes_id].step(x_vec, y_vec, "o-y", where='post', label='authentic alignment')
-        for x,y,p in zip(x_vec,y_vec,p_vec):
+       
+        for x,y,p in zip(x_vec[:-1],y_vec[:-1],p_vec):
             axes[axes_id].text(x, y+1, p, color="white", fontsize=30)
         #axes[1].plot(x_vec, y_vec, "o-y", label='authentic alignment')
 

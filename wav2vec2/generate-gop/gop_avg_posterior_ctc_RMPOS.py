@@ -7,7 +7,7 @@ import json
 import pandas as pd
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 import datasets
-from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor,Wav2Vec2ForCTC
+from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer, Wav2Vec2Processor,Wav2Vec2ForCTC_Circular
 import torch
 from pathlib import Path
 import pdb
@@ -157,7 +157,7 @@ if __name__ == "__main__":
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
-    model = Wav2Vec2ForCTC.from_pretrained(model_path)
+    model = Wav2Vec2ForCTC_Circular.from_pretrained(model_path)
     model.eval()
 
     # load dataset and read soundfiles
