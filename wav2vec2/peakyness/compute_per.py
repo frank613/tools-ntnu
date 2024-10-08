@@ -46,14 +46,28 @@ def read_ref(ref_path):
             ref_map.update({items[0]:items[1]})
     return ref_map
 
+def rmdup(p_list):
+    prev = None
+    new_list = []
+    for p in p_list:
+        if p != prev:
+            new_list.append(p)
+        prev = p
+    return new_list
+
+
 #return tuples of (hyp, ref)       
 def filter_ref(hyp_map, ref_map):
     filtered_pair_list = []
-    vocabs = list(set((" ".join(list(hyp_map.values())).split(' '))))
+    vocabs = set((" ".join(list(hyp_map.values())).split(' ')))
+    vocabs = list(vocabs - sil_tokens - spec_tokens)
     for k,v in hyp_map.items():
         if k in ref_map.keys():
             ref_filtered = [ phone for phone in ref_map[k].split(';') if phone in vocabs]
-            filtered_pair_list.append((v, " ".join(ref_filtered)))
+            hyp_filtered = [ phone for phone in v.split(' ') if phone in vocabs]
+            ref = rmdup(ref_filtered)
+            hyp = rmdup(hyp_filtered)
+            filtered_pair_list.append((" ".join(hyp), " ".join(ref)))
 
     return filtered_pair_list
 
@@ -72,6 +86,7 @@ if __name__ == "__main__":
     hyp_ref = list(zip(*filtered_pair_list))
 
     #compute and report
+    #pdb.set_trace()
     output = jiwer.process_words(list(hyp_ref[1]), list(hyp_ref[0]))
     print("PER: {:.4f}".format(output.wer))
     print("average-conEN: {:.4f}".format(sum(con_list)/len(con_list)))

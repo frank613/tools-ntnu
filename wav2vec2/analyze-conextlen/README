@@ -1,0 +1,3 @@
+python analyze_context_len.py ./transcriptions/cmu_ali.txt ../training/out-models/ctc-large-full/checkpoint-8000/  ~/data/data-for-w2v2/cmu-kids/metadata.csv ../training/out-models/ctc-large-full/processor_config_gop/ ./out.json
+
+ python analyze_context_len_batch.py ./transcriptions/cmu.ctm ../training/out-models/ctc-large-full/checkpoint-8000/  ~/data/data-for-w2v2/cmu-kids/metadata.csv ../training/out-models/ctc-large-full/processor_config_gop/ ./transcriptions/cmu_error.txt ./output-cmu/analyze-context-len/test

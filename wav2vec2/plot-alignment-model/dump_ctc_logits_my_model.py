@@ -240,7 +240,8 @@ if __name__ == "__main__":
     count = 0
     #target = 0
     #target = "facs2ap2"
-    target = "fabm2aa1"
+    #target = "fabm2aa1"
+    target = "fclm2ah1"
     with torch.no_grad():
         #pid_set = p_tokenizer.convert_tokens_to_ids(p_set)
         json_dict = {}  

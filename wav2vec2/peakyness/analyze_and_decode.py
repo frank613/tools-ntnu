@@ -90,8 +90,8 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
-    # if row["id"] != "fabm2bt2":
-    #     return
+    if row["id"] != "fclm2ah1":
+        return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         #f.write(row['id']+'\n')
@@ -114,6 +114,7 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         bc = prob[:,p_tokenizer.pad_token_id].mean()
         ##step 4, decoding
         hyp_ids = torch.argmax(logits, dim=-1)
+        pdb.set_trace()
         tokens = processor.tokenizer.batch_decode(hyp_ids)
         hyp = processor.tokenizer.convert_tokens_to_string(tokens,spaces_between_special_tokens=True)
         f.write("%s,%d,%d,%s,%s,%s\n"%(row['id'], len_labels, len_T, entropy.item(), bc.item(), hyp["text"]))
@@ -152,7 +153,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[6]}, num_proc=10) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[6]}, num_proc=1) 
     
     print("done")
     

@@ -23,6 +23,41 @@ else:
 regularized_ctc_loss.floatX = floatX
 from regularized_ctc_loss import m_eye, log_batch_dot, log_sum_exp, log_sum_exp_axis
 
+## we remove the entropy part
+def seg_ctc_cost(out, targets, sizes, target_sizes, uni_rate=1.5, blank=0):
+#    A batched version for uni_alpha_cost
+#    param out: (Time, batch, voca_size+1)
+#    param targets: targets without splited
+#    param sizes: size for out (N)
+#    param target_sizes: size for targets (N)
+    '''
+    out = out.cpu()
+    targets = targets.cpu()
+    sizes = sizes.cpu()
+    target_sizes = target_sizes.cpu()
+    '''
+
+    Time = out.size(0)
+    pred = out
+    loss_func = seg_ctc_loss_log
+
+    offset = 0
+    batch = target_sizes.size(0)
+    target_max = target_sizes.max().item()
+    target = T.zeros(batch, target_max).type(longX)
+    uniform_mask = Variable(T.zeros(Time, batch).type(byteX))
+    for index, (target_size, size) in enumerate(zip(target_sizes, sizes)):
+        target[index, :target_size.item()] = targets[offset: offset+target_size.item()].data
+        offset += target_size.item()
+        uni_length = int(uni_rate * (size.data.item() / target_size.data.item() + 1))
+        uniform_mask[-uni_length:, index] = 1
+
+    if not cuda:
+        costs = loss_func(pred.cpu(), sizes.data.type(longX), target, target_sizes.data.type(longX), uniform_mask, blank)
+    else:
+        costs = loss_func(pred, sizes.data.type(longX), target, target_sizes.data.type(longX), uniform_mask, blank)
+    return costs.sum()
+
 def seg_ctc_ent_cost(out, targets, sizes, target_sizes, uni_rate=1.5, blank=0):
 #    A batched version for uni_alpha_cost
 #    param out: (Time, batch, voca_size+1)
@@ -57,6 +92,77 @@ def seg_ctc_ent_cost(out, targets, sizes, target_sizes, uni_rate=1.5, blank=0):
         H, costs = loss_func(pred, sizes.data.type(longX), target, target_sizes.data.type(longX), uniform_mask, blank)
     return H.sum(), costs.sum()
 
+
+
+## we remove the entropy part
+def seg_ctc_loss_log(pred, pred_len, token, token_len, uniform_mask, blank=0):
+    '''
+    alpha(t, b, i) means the probability of end with output token i till time t
+    beta(t, b, j, 2) means the probability of output only token j, from time t to now
+    :param pred: (Time, batch, voca_size+1)
+    :param pred_len: (batch,)
+    :param token: (batch, U=token_len)
+    :param token_len: (batch)
+    :param blank: 0
+
+    :out alpha: (Time, batch, 2U+1) ∑p(π|x)
+    :return: cost
+    '''
+    eps_nan = -1e8
+    eps = 1e-6
+
+    Time, batch = pred.size(0), pred.size(1)
+    U = token.size(1)
+
+    token_with_blank = T.cat((T.zeros(batch, U, 1).type(longX), token[:, :, None]), dim=2)    # (batch, U, 2)
+    pred_blank = pred[:, :, 0]  # (Time, batch)
+    pred = pred[T.arange(0, Time).type(longX)[:, None, None, None], T.arange(0, batch).type(longX)[None, :, None, None], token_with_blank[None, :]]
+    # (Time, batch, U, 2)
+
+    token_equals = T.nonzero(T.eq(token[:, :-1], token[:, 1:]))#batch, U-1
+    if len(token_equals.size()) == 2:
+        te_b = token_equals[:, 0]
+        te_u = token_equals[:, 1]
+        have_equal = True
+    else:
+        have_equal = False
+
+    betas = T.cat((pred[0, None], T.ones(Time-1, batch, U, 2).type(floatX)*eps_nan), dim=0)
+    # (Time, batch, U, 2)
+    alphas = T.cat((pred[0, :, 0, 1, None], T.ones(batch, U-1).type(floatX)*eps_nan), dim=1)[None]
+    # (1, batch, U)
+  
+
+    batch_range = T.arange(0, batch).type(longX)
+    labels = alphas[-1][batch_range, token_len-1][None].clone() + \
+            (1-uniform_mask[0].type(floatX))*eps_nan# prob of emit the last token till now
+    # (1, batch)
+
+    for t in T.arange(1, Time).type(longX):
+        betas[:t] = T.cat((betas[:t, :, :, 0, None], \
+                log_sum_exp(betas[:t, :, :, 0, None], betas[:t, :, :, 1, None])), dim=-1) \
+                + pred[t, None]
+        betas[t] = pred[t]
+      
+
+        alphas_t = T.cat((betas[0, :, 0, 1][:, None].clone() + \
+                (1-uniform_mask[-t, :, None].type(floatX)) * eps_nan, \
+                log_sum_exp_axis(alphas[:, :, :-1] + betas[1:t+1, :, 1:, -1].clone(), \
+                    uniform_mask[-t:, :, None].expand(t.item(), batch, U-1), dim=0)), dim=1)
+        if have_equal:
+            alphas_t[te_b, 1+te_u] = log_sum_exp_axis(alphas[:-1][:, te_b, te_u] \
+                                           + pred_blank[1:t][:, te_b] \
+                                           + betas[2:t+1, :, :, -1][:, te_b, 1+te_u].clone(),
+                                           uniform_mask[-t+1:][:, te_b],
+                                           dim=0).clone() if t >= 2 else eps_nan
+
+        alphas = T.cat((alphas, alphas_t[None, :]), dim=0)
+        labels_t = log_sum_exp(labels[-1] + pred_blank[t] + (1-uniform_mask[t].type(floatX))*eps_nan, alphas[-1][batch_range, token_len-1]) 
+        labels = T.cat((labels, labels_t[None]), dim=0).clone()
+       
+    lt = labels[pred_len-1, batch_range]
+    costs = -lt
+    return costs # (batch)
 
 def seg_ctc_ent_loss_log(pred, pred_len, token, token_len, uniform_mask, blank=0):
     '''

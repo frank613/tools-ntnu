@@ -12,7 +12,7 @@ from my_w2v2_package.custom_processor import My_Wav2Vec2CTCTokenizer,My_Wav2Vec2
 from my_w2v2_package.custom_CTC_module import Wav2Vec2ForESCTC
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
 ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
@@ -269,8 +269,8 @@ if __name__ == "__main__":
     training_args = TrainingArguments(
         output_dir=out_path,
         group_by_length=False,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=32,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=16,
         evaluation_strategy="steps",
         num_train_epochs=10,
         gradient_checkpointing=True,

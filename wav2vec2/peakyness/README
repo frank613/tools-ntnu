@@ -1,3 +1,5 @@
 python conditioned_entropy.py ./transcriptions/cmu.ctm ./models/ctc-en/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ctc/ ./out-cmu-ctc/test
 
+python analyze_and_decode.py ./transcriptions/cmu.ctm ./transcriptions/cmu_error.txt ./models/rctc-zj-epoch8/ data-new/data-for-w2v2/cmu-kids/metadata.csv /home/xinweic/aulus7_xinweic/wav2vec2/models/epoch-8/preprocessor ./out-zj-ep8/test
+
 python compute_per.py ./out-cmu-enCTC-015/all.txt ./transcriptions/label_mapped.txt

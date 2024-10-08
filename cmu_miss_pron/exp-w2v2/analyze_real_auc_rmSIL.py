@@ -60,6 +60,7 @@ def labelError(GOP_file, error_list, tran_file):
 
         extended += [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(row['seq-score']) ]
     df = pd.concat([df, pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid'])])
+    pdb.set_trace()
     #json
     #p:(auc_value, frequent_sub, mean, std, count_of_del, count_of_sub, total_count)
     out_form = { \

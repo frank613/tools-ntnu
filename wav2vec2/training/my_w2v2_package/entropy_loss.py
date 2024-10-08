@@ -59,7 +59,7 @@ def log_batch_dot(alpha_t, rec):
     rec: (batch, 2U+1, 2U+1)
     '''
     eps_nan = -1e8
-    # a+b
+    # a+b, because log(ab) = loga + logb
     _sum = alpha_t[:, :, None] + rec
     _max_sum = T.max(_sum, dim=1)[0]
     nz_mask1 = T.gt(_max_sum, eps_nan) # max > eps_nan

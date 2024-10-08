@@ -11,7 +11,7 @@ from torch import nn
 from entropy_loss import ctc_entropy_cost, ctc_prior_entropy_cost
 from regularized_ctc_loss import reg_ctc_cost, reg_ctc_sil_cost, reg_ctc_nob_cost, reg_ctc_nb_sil_cost, reg_ctc_nob_mid_cost
 from original_ctc_loss import ebbctc_cost, ebfctc_cost
-from es_ctc_log import seg_ctc_ent_cost
+from es_ctc_log import seg_ctc_cost
 import pdb
 
 class Wav2Vec2ForECTC(Wav2Vec2ForCTC):
@@ -138,10 +138,9 @@ class Wav2Vec2ForESCTC(Wav2Vec2ForCTC):
             log_probs = nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32).transpose(0, 1)
 
             with torch.backends.cudnn.flags(enabled=False):
-                H, cost = seg_ctc_ent_cost(log_probs, flattened_targets, input_lengths, target_lengths, blank=self.config.pad_token_id)
-                H, cost = torch.mean(H), torch.mean(cost)
-                # We add 200 to avoid loss going negative
-                loss = cost - self.entropy_beta*H + 200.0  
+                cost = seg_ctc_cost(log_probs, flattened_targets, input_lengths, target_lengths, blank=self.config.pad_token_id)
+                cost = torch.mean(cost)
+                loss = cost  
                 #print(f"token {self.config.pad_token_id}, beta {self.entropy_beta}, ctc_loss {cost}, H {H}, total loss {loss}")
 
         if not return_dict:

@@ -22,8 +22,8 @@ datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
 datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
-spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
+noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
 sil_vocab = "SIL"
 
 #RE for Teflon files
@@ -48,7 +48,7 @@ def read_trans(trans_path):
                 cur_uttid = items[0]
                 trans_map[cur_uttid] = []
             phoneme = re_phone.match(items[4]).group(1)                
-            if phoneme not in (sil_tokens | spec_tokens):
+            if phoneme not in (sil_tokens | noisy_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
 
@@ -113,8 +113,11 @@ def single_process(example, p_tokenizer, processor, model, sil_token_id, out_pat
         return_dict = model(input_values, labels = labels)
         logits = return_dict["logits"].squeeze(0) 
         prob = logits.softmax(dim=-1).type(torch.float32)
-        log_prob = logits.log_softmax(dim=-1).type(torch.float32)
+        ##merge noisy tokens to SIL
+        noisy_labels = p_tokenizer.convert_tokens_to_ids(list(noisy_tokens))
+        prob[:, sil_token_id] = prob[:,sil_token_id] + torch.sum(prob[:,noisy_labels], axis=-1)
         #step 2, compute the conditoned entropy, here we only use batch_size = 1 
+        log_prob = prob.log().type(torch.float32)
         len_labels = torch.Tensor([labels.shape[0]]).type(torch.int)
         len_T = torch.Tensor([log_prob.shape[0]]).type(torch.int)
         ## we don't need conditioned on the label for calculate the vocab-entropy, as it is for training. Here as a measure, unconditioned ensures the number of values are same over all the utterences
