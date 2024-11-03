@@ -30,7 +30,7 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
 
 
 def labelError(GOP_file, error_list, tran_file):
-    gop_df = readGOPToDF(GOP_file)
+    gop_df = readGOPToDF(GOP_file,weight=1,mode="no-norm")
     tran_df = readTRANToDF(tran_file)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
     tran_list = tran_df['uttid'].unique()
@@ -99,6 +99,7 @@ def labelError(GOP_file, error_list, tran_file):
         out_form["phonemes"][phoneme]=(auc_value, freq_sub, mean, std, num_del, num_sub, num_total)
         num_phonemes += 1
 
+    #pdb.set_trace()
     out_form["summary"]["average-mean"]=total_mean/num_phonemes
     out_form["summary"]["average-std"]=total_std/num_phonemes
     out_form["summary"]["average-AUC"]=total_auc/num_phonemes
@@ -110,7 +111,7 @@ def labelError(GOP_file, error_list, tran_file):
     
 
 
-def readGOPToDF(ark_file):
+def readGOPToDF(ark_file, weight=1, mode="no-norm"):
     in_file = open(ark_file, 'r')
     df = pd.DataFrame(columns=('uttid', 'seq-score'))
     isNewUtt = True
@@ -129,16 +130,30 @@ def readGOPToDF(ark_file):
             isNewUtt = True
             seq_score = []
             continue
-        if len(fields) != 3:
+        if len(fields) != 4:
             continue
         cur_match = re_phone.match(fields[1])
         if (cur_match):
             cur_phoneme = cur_match.group(1)
         else:
             sys.exit("non legal phoneme found in the gop file")
-        cur_score = float(fields[2]) 
+        cur_occ = float(fields[3]) 
+        #cur_occ = 1
+        cur_score = float(fields[2])
         if cur_phoneme not in exclude_token:
-            seq_score.append((cur_phoneme, cur_score)) 
+            if not mode:
+                occ_new = max(1,cur_occ)*weight
+            elif mode == "round":
+                occ_new = max(1,np.round(cur_occ))*weight
+            elif mode == "ceiling":
+                occ_new = np.ceil(cur_occ)*weight
+            elif mode == "floor":
+                occ_new = max(1,np.floor(cur_occ))*weight
+            elif mode == "no-norm":
+                occ_new = 1
+            else:
+                pass
+            seq_score.append((cur_phoneme, cur_score/occ_new))
     return df
 
 def readTRANToDF(tran_file):

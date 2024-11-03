@@ -143,6 +143,7 @@ def get_alpha_bar(alphas, t, blank, pos, ce_mask, next_label):
     arbitrary_state = 2*pos + 1 
     alpha_mask = torch.ones(alphas.shape[2], dtype=torch.bool)
     alpha_mask[blank] = False  ## the same as the next blank state, so we remove
+    ##logic error?
     alpha_mask[ce_mask.bool()] = False
     if next_label is not None:
         alpha_mask[next_label] = False  ## the same as the next blank state, so we remove
@@ -183,7 +184,7 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
         alphas[3,0,0] = params[seq[1],0]
         
         alphas[1,0] = params[0:,0] * ce_mask #an list all tokens
-        alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
+        alphas[1,0,blank] = 0  #can't stay at blank, same as the alphas[0,0,0] 
         alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, ce_mask, next_label_idx) 
     else:
         alphas[0,0,0] = params[blank,0]
@@ -246,6 +247,7 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
         alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
     
     llForward = torch.log(alpha_bar).sum() 
+    pdb.set_trace()
     return -llForward
 
 def single_process(example, p_tokenizer, processor, model, out_path):
@@ -281,6 +283,7 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         for i,pid in enumerate(pids):
             ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, ce_mask, blank=sil_index)
             gop = -ll_self + ll_denom
+            pdb.set_trace()
             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
         f.write("\n")
 
@@ -307,7 +310,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=5) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=1) 
     
     print("done")
     

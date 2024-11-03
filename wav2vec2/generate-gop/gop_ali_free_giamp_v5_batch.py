@@ -132,7 +132,7 @@ def ctc_loss(params, seq, blank=0):
     return -llForward
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
-##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
+##zero pos here starst from 0
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
     if in_alphas[s,t].sum() > 0:
         if len(zero_pos) != 0:

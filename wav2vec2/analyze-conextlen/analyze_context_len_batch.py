@@ -363,6 +363,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 def single_process(example, p_tokenizer, processor, model, max_context_len, out_path):
     row = example
     proc_id = str(os.getpid())
+    #if row["id"] != "fahj1by1":
+    #    return    
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:   
         ##step1  get logits     
@@ -384,41 +386,48 @@ def single_process(example, p_tokenizer, processor, model, max_context_len, out_
         p_set = set(p_tokenizer.get_vocab().keys())
         ## p_set for select replacements
         p_list = list(p_set - spec_tokens - {p_from})
-        ##compute full context gop for correct and wrong
+        ## select wrong phonemes
+        p_to_pair = []
+        for i in range(5):
+            p_to = p_list[random.randrange(0, len(p_list))]
+            pid_to = p_tokenizer._convert_token_to_id(p_to)
+            p_to_pair.append((p_to,pid_to))
+        ##compute full context gop for correct
         ll_self = ctc_loss(post_mat.transpose(0,1), pid_seq, blank=0)
         ll_denom = ctc_loss_denom(post_mat.transpose(0,1), pid_seq, p_index, blank=0)
         gop = -ll_self + ll_denom
-        f.write("%s,%s,%s,%s->%s,%s\n"%(row['id'], "full", p_index, p_from, p_from, gop.item()))
-        #3 wrong phonemes               
-        for j in range(5):
-            p_to = p_list[random.randrange(0, len(p_list))]
-            pid_to = p_tokenizer._convert_token_to_id(p_to)
+        f.write("%s,%s,%s->%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, "full", p_from, p_from, gop.item()))
+        #wrong phonemes               
+        for p_to, pid_to in p_to_pair:
             labels_replaced = pid_seq.clone()
             labels_replaced[p_index] = pid_to
             ll_self_replaced = ctc_loss(post_mat.transpose(0,1), labels_replaced, blank=0)
             gop_replaced = -ll_self_replaced + ll_denom
-            f.write("%s,%s,%s,%s->%s,%s\n"%(row['id'], "full", p_index, p_from, p_to, gop_replaced.item()))
+            f.write("%s,%s,%s->%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, "full", p_from, p_to, gop_replaced.item()))
         if p_index - context_range < 0 or p_index + context_range > len(pid_seq) - 1:
             print("not enough left or right context")  
             return
-        for i in range(0, int(context_len/2)+1):
-                labels = torch.Tensor(pid_seq[p_index-i:p_index + i + 1]).type(torch.int32) ## start from no context
+        
+        ### try with other content-len
+        # substitutions       
+        for p_to, pid_to in p_to_pair:
+            labels_wrong = pid_seq.clone()
+            labels_wrong[p_index] = pid_to
+            for i in range(0, int(context_len/2)+1):
                 frame_range_l = int(sum(token_range[(2*(p_index-i) + 1) -1])/2)
                 frame_range_r = int(sum(token_range[(2*(p_index+i) + 1) + 1])/2)
+                #correct
+                labels = torch.Tensor(pid_seq[p_index-i:p_index + i + 1]).type(torch.int32) ## start from no context
                 ll_self = ctc_loss(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels, blank=0)
                 ll_denom = ctc_loss_denom(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels, i, blank=0)
                 gop = -ll_self + ll_denom
-                #correct
-                f.write("%s,%s,%s,%s->%s,%s\n"%(row['id'], 2*i, p_index, p_from, p_from, gop.item()))
-                #3 wrong phonemes               
-                for j in range(5):
-                    p_to = p_list[random.randrange(0, len(p_list))]
-                    pid_to = p_tokenizer._convert_token_to_id(p_to)
-                    labels_replaced = labels.clone()
-                    labels_replaced[i] = pid_to
-                    ll_self_replaced = ctc_loss(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels_replaced, blank=0)
-                    gop_replaced = -ll_self_replaced + ll_denom
-                    f.write("%s,%s,%s,%s->%s,%s\n"%(row['id'], 2*i, p_index, p_from, p_to, gop_replaced.item()))
+                f.write("%s,%s,%s->%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, 2*i, p_from, p_from, gop.item()))            
+                ##wrong
+                labels_replaced = torch.Tensor(labels_wrong[p_index-i:p_index + i + 1]).type(torch.int32) ## start from no context
+                ll_self_replaced = ctc_loss(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels_replaced, blank=0)
+                gop_replaced = -ll_self_replaced + ll_denom
+                f.write("%s,%s,%s->%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, 2*i, p_from, p_to, gop_replaced.item()))
+                 
         
 
 #run viterbi and get the dict of range of each token, there might be blanks being skipped, we need to add dummy segment for those
@@ -432,6 +441,8 @@ def get_token_range(post_mat, pid_seq):
     left = 0
     right = -1
     for c,current in enumerate(path_int):
+        if last == -1 and current == 1: ##skipped the first blank
+            token_range.append((0,0))
         if current != last and last != -1:
             right = c-1
             token_range.append((left, right))
@@ -444,7 +455,6 @@ def get_token_range(post_mat, pid_seq):
     else:
         token_range.append((left, len(path_int)-1))
         token_range.append((len(path_int)-1, len(path_int)-1))
-    #pdb.set_trace()
     assert(len(token_range) == 2*len(pid_seq) + 1)
     return token_range
         

@@ -21,6 +21,7 @@ datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 sil_token = "SIL"
 noisy_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "SPN"))
+PAD_SIL_TOKEN = "SIL"
 
 #RE for Teflon files
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
@@ -31,6 +32,7 @@ re_uttid_raw = re.compile(r'(.*)\.(.*$)')
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
     
+#pad_sil_token on begin and end of the sequence if not None   
 def read_trans(trans_path):
     trans_map = {}
     cur_uttid = ""
@@ -46,7 +48,6 @@ def read_trans(trans_path):
             if phoneme not in (set([sil_token]) | noisy_tokens):
                 trans_map[cur_uttid].append(phoneme)
     return trans_map 
-
 
 def load_dataset_local_from_dict(csv_path, cache_additional):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -79,8 +80,8 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
 
     return ds_filtered
 
-##return the probablity of the numerator, using normalized alpha 
-def ctc_loss_num(params, seq, blank=0):
+##return only likeli
+def ctc_loss(params, seq, blank=0):
     """
     CTC loss function.
     params - n x m matrix of n-D probability distributions(softmax output) over m frames.
@@ -88,7 +89,6 @@ def ctc_loss_num(params, seq, blank=0):
     Returns objective, alphas and betas.
     """
     seqLen = seq.shape[0] # Length of label sequence (# phones)
-    numphones = params.shape[0] # Number of labels
     L = 2*seqLen + 1 # Length of label sequence with blanks
     T = params.shape[1] # Length of utterance (time)
 
@@ -118,39 +118,52 @@ def ctc_loss_num(params, seq, blank=0):
             else:
                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
                     * params[seq[l],t]
+        #if t==19:
+        #    pdb.set_trace()
         alpha_bar[t] = torch.sum(alphas[:,t])
         alphas[:,t] = alphas[:,t] / alpha_bar[t]
     
-    llForward = torch.log(alpha_bar).sum()     
+    llForward = torch.log(alpha_bar).sum()  	
     return -llForward
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
-##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
+##zero pos here starst from 0
 def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if in_alphas[s,t].sum() > 0:
+    #if in_alphas[s,t].sum() > 0:
+    if torch.count_nonzero(in_alphas[s,t]) > 1:
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
                 mask[i] = 0
-            return sum(in_alphas[s,t] * mask)
+            return sum(in_alphas[s,t][mask.bool()])
         else:
-            return sum(in_alphas[s,t])
+            return sum(in_alphas[s,t][:])
     else:
         return False
-    
 
-##we need to move the entry of next_label for alpha_bar
-def get_alpha_bar(alphas, t, blank, pos, ce_mask, next_label):
+##we need to remove the duplication for the "arbitrary" state
+# def get_alpha_bar(alphas, t, blank, pos, next_label, leakage):
+#     arbitrary_state = 2*pos + 1 
+#     alpha_mask = torch.ones(alphas.shape[2], dtype=torch.bool)
+#     alpha_mask[blank] = False  ## the same as the next blank state, so we remove
+#     if next_label is not None:
+#         alpha_mask[next_label] = False  ## the same as the next non-blank state, so we remove
+#     ret = alphas[:arbitrary_state,t,0].sum() + alphas[arbitrary_state,t,alpha_mask].sum() + alphas[arbitrary_state+1:,t,0].sum() - leakage
+#     return ret
+
+def get_alpha_bar(alphas, t, blank, pos, ce_mask, next_label, leakage):
+    #if t==19:
+    #    pdb.set_trace()
     arbitrary_state = 2*pos + 1 
     alpha_mask = torch.ones(alphas.shape[2], dtype=torch.bool)
     alpha_mask[blank] = False  ## the same as the next blank state, so we remove
-    alpha_mask[ce_mask.bool()] = False
+    alpha_mask[ce_mask.bool().logical_not()] = False
     if next_label is not None:
-        alpha_mask[next_label] = False  ## the same as the next blank state, so we remove
-    return alphas[:arbitrary_state,t,0].sum() + alphas[arbitrary_state+1:,t,0].sum() + alphas[arbitrary_state,t,alpha_mask].sum()
-
+        alpha_mask[next_label] = False  ## all the paths via this state is contained in the next state
+    return alphas[:arbitrary_state,t,0].sum() + alphas[arbitrary_state+1:,t,0].sum() + alphas[arbitrary_state,t,alpha_mask].sum() - leakage
 
 ##This version composes of deletion subsitution using normalized alphas, so we need to concern skip paths
+## it also tracts the leakage probability and substract it
 def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
     """
     CTC loss function.
@@ -168,35 +181,42 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
     #mask_ins[blank,:] = torch.ones(P)
     
     ##extend the tensor to save "arbitrary state"
-    alphas = torch.zeros((L,T,P))
-    alpha_bar = torch.zeros(T)
+    alphas = torch.zeros((L,T,P)).double()
+    alpha_bar = torch.zeros(T).double()
     
     if pos == seqLen - 1:
         next_label_idx = None
     else:
         next_label_idx = seq[pos+1]
     
+
     # Initialize alphas 
     if pos == 0:
         alphas[0,0,0] = params[blank,0]
         # can totally skip the pos, in this version we remove the initialization of state 2
         alphas[2,0,0] = 0
-        alphas[3,0,0] = params[seq[1],0]
-        
-        alphas[1,0] = params[0:,0] * ce_mask #an list all tokens
-        alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
-        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, ce_mask, next_label_idx)
+        if len(seq) > 1:
+            alphas[3,0,0] = params[seq[1],0]
+        alphas[1,0] = params[0:,0] * ce_mask  #an list all tokens
+        alphas[1,0,blank] = 0  #can't stay at blank, same as the alphas[0,0,0] 
+        ##### extra duplication at empty state after arbitrary state
+        extra = params[seq[1],0]
+        leakage = extra 
+        # alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx, leakage)
+        alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, ce_mask, next_label_idx, leakage)
     else:
         alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
         alpha_bar[0] =  alphas[0,0,0] + alphas[1,0,0]
+        extra = 0
+        leakage = extra 
+        
     alphas[:,0,:] = alphas[:,0,:] /  alpha_bar[0]
     
     for t in range(1,T):
-        if pos == seqLen-1: ###different from non-composed one, +1 below for possible skip paths at the final states
-            lowest_state = L-2*(T-t+1)
-        else:
-            lowest_state = L-2*(T-t)
+        lowest_state = L-2*(T-t)
+        if (lowest_state-1) / 2 == pos: ### -2 for possible skip paths at the arnitrary state
+            lowest_state = lowest_state - 2
         start = max(0,lowest_state) 
         for s in range(start,L):
             l = int((s-1)/2)
@@ -209,6 +229,10 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
                     if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
                         ##in this version no need to remove for t=1, because state 2 is not initialized anymore
                         alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
+                        ## extra duplication at empty state after arbitrary state
+                        if next_label_idx != None:
+                            extra = alphas[s-1, t-1, next_label_idx] * params[blank, t]
+                            leakage = leakage*params[blank, t] + extra 
                     else:
                         alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0]) * params[blank,t]
             elif pos != l and pos != l-1:
@@ -230,8 +254,8 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
             else: #current pos can be arbitrary tokens, use the boardcast scale product to allow all the paths    
                 if s == 1: #the blank pathes from the first term is already removed for t=0 at initial step, so we don't do it again
                     empty_prob = alphas[s-1,t-1,0] * params[:,t]
-                    empty_prob[blank] = 0
-                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + empty_prob) * ce_mask
+                    empty_prob[blank] = 0  
+                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + empty_prob) * ce_mask
                     
                 else: #enterting wildcard state, for the skip path and empty path, we need to remove the pos of the same label and blank token to avoid duplicated paths. alph
                     skip_prob = alphas[s-2,t-1,0] * params[:,t]  
@@ -241,20 +265,25 @@ def ctc_loss_denom(params, seq, pos, ce_mask, blank=0):
                     empty_prob = alphas[s-1,t-1,0] * params[:,t]
                     empty_prob[blank] = 0
 
-                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob) * ce_mask 
-                    
-        alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, ce_mask, next_label_idx)
+                    #alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob) * ce_mask
+                    alphas[s,t,:] = ((alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1)).sum(-1) + skip_prob + empty_prob) * ce_mask
+
+        # alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, next_label_idx, leakage)
+        if start > 2*pos + 2:
+            leakage = 0
+        #if pos == 1 and t == 18 :
+        #    pdb.set_trace()
+        alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, ce_mask, next_label_idx, leakage)
         alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
-    
-    llForward = torch.log(alpha_bar).sum() 
-    return -llForward
+        leakage = leakage / alpha_bar[t]
+        
+    occ = alphas[2*pos+1,:,:].sum()
+    llForward = torch.log(alpha_bar).sum()
+    return (-llForward,occ)
 
 def single_process(example, p_tokenizer, processor, model, out_path):
     row = example
     proc_id = str(os.getpid())
-    #if row['id'] != "fahj1cm2":
-    #if row['id'] != "fabm2aa1":
-    #    return
     print("processing {0}".format(row['id']))
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
         f.write(row['id']+'\n')
@@ -273,16 +302,15 @@ def single_process(example, p_tokenizer, processor, model, out_path):
         post_mat[:, sil_index] = post_mat[:,sil_index] + torch.sum(post_mat[:,noisy_labels], axis=-1)
         ce_mask = torch.ones(post_mat.shape[1])
         ce_mask[noisy_labels] = 0
-        
         ##get numerator
-        ll_self = ctc_loss_num(post_mat.transpose(0,1), labels, blank = sil_index)
-        #pdb.set_trace()
+        ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=sil_index)
+        
         #step 2, compute the GOP
         pids = labels.tolist()
         for i,pid in enumerate(pids):
-            ll_denom = ctc_loss_denom(post_mat.transpose(0,1), labels, i, ce_mask, blank=sil_index)
+            ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), labels, i, ce_mask, blank=sil_index)
             gop = -ll_self + ll_denom
-            f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item()))
+            f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item(), occ.item()))
         f.write("\n")
 
         
@@ -291,15 +319,17 @@ if __name__ == "__main__":
 
     print(sys.argv)
     if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <out-file>.\n \
-        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv") 
-    #step 0, read the files
-    tran_map = read_trans(sys.argv[1]) 
-    uttid_list = tran_map.keys()
+        sys.exit("this script takes 5 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <SIL-token> <out-file>.\n \
+        , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv.")  
     # load the pretrained model and data
+    tran_path = sys.argv[1]
     model_path = sys.argv[2]
     csv_path = sys.argv[3]
     prep_path = sys.argv[4]
+ 
+    #step 0, read the files
+    tran_map = read_trans(tran_path) 
+    uttid_list = tran_map.keys()
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
@@ -308,7 +338,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=5) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[5]}, num_proc=15) 
     
     print("done")
     
