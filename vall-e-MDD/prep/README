@@ -1,0 +1,14 @@
+##venv
+conda activate vall-e
+## get IPA phoenems and compare
+./cmu_g2p.sh /talebase/data/speech_raw/cmu_kids_v2/ ./cmu-text/
+## compare difference
+python compare_canonical.py ./cmu-text/merged.txt ./transcriptions/cmu.ctm
+
+## prepare data
+./cmu_to_wav.sh /talebase/data/speech_raw/cmu_kids_v2/ ./audio-cmu/all-spkr
+export PYTHONPATH=/home/xinweic/git-repos/vall-e/
+cd audio-cmu
+python -m vall_e.emb.transcribe 
+python -m vall_e.emb.process --raise-exceptions
+

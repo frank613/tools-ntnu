@@ -1,0 +1,3 @@
+export PYTHONPATH=/home/xinweic/git-repos/vall-e/
+
+python mdd-single.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./out_cao_pron_noise.gop
