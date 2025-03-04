@@ -217,31 +217,20 @@ def ctc_loss(params, seq, blank=0):
 	
     return -llForward
 
-##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
-##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if in_alphas[s,t].sum() > 0:
+#check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
+#zero_pos is used for blocking the path
+def check_arbitrary(in_alphas, s, t, pos, zero_pos=[]):
+    if (s-1)/2 == pos: ## is arbitrary
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
                 mask[i] = 0
-            return sum(in_alphas[s,t][mask.bool()])
+            return (in_alphas[s,t] * mask ).sum()
         else:
-            return sum(in_alphas[s,t][:])
+            return (in_alphas[s,t]).sum()
     else:
-        return False
-
-# def get_alpha_bar(alphas, t, blank, next_label_idx, pos):
-#     ## for comupting the alpha bar, we need to remove the blank state and next_label state in the arbitrary state  
-#     ###exclude the same state in the "ärbitrary" state when computing the alpha_bar
-#     arbitrary_state = 2*pos + 1 
-#     alpha_mask = torch.ones(alphas.shape[2], dtype=torch.bool)
-#     alpha_mask[blank] = False
-#     if next_label_idx is not None:
-#         alpha_mask[next_label_idx] = False
-#     return alphas[:arbitrary_state,t,0].sum() + alphas[arbitrary_state+1:,t,0].sum() + alphas[arbitrary_state,t,alpha_mask].sum()
-
-
+        return None
+    
 ##we need to remove the duplication for the "arbitrary" state
 def get_alpha_bar(alphas, t, blank, pos, next_label, leakage):
     arbitrary_state = 2*pos + 1 
@@ -251,6 +240,7 @@ def get_alpha_bar(alphas, t, blank, pos, next_label, leakage):
         alpha_mask[next_label] = False  ## the same as the next non-blank state, so we remove
     ret = alphas[:arbitrary_state,t,0].sum() + alphas[arbitrary_state,t,alpha_mask].sum() + alphas[arbitrary_state+1:,t,0].sum() - leakage
     return ret
+
 
 ##This version composes of deletion subsitution using normalized alphas, so we need to concern skip paths
 ## it also tracts the leakage probability and substract it
@@ -265,11 +255,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     L = 2*seqLen + 1 # Length of label sequence with blanks
     T = params.shape[1] # Length of utterance (time)
     P = params.shape[0] # number of tokens    
-
-    ## constraint mask for disabling insertion, and in this version we don't allow phoneme->blank but remains in the arbitrary state 
-    mask_ins = torch.eye(P)
-    #mask_ins[blank,:] = torch.ones(P)
-    
+  
     ##extend the tensor to save "arbitrary state"
     alphas = torch.zeros((L,T,P)).double()
     alpha_bar = torch.zeros(T).double()
@@ -279,9 +265,10 @@ def ctc_loss_denom(params, seq, pos, blank=0):
     else:
         next_label_idx = seq[pos+1]
     
-    ##### extra duplication at empty state after arbitrary state
-    leakage = 0
-    extra = 0
+    ## constraint mask for disabling insertion, and in this version we don't allow phoneme->blank but remains in the arbitrary state 
+    mask_ins = torch.eye(P)
+    #mask_ins[blank,:] = torch.ones(P)
+    
     # Initialize alphas 
     if pos == 0:
         alphas[0,0,0] = params[blank,0]
@@ -289,14 +276,21 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alphas[2,0,0] = 0
         if len(seq) > 1:
             alphas[3,0,0] = params[seq[1],0]
+            ##### extra duplication at empty state after arbitrary state
+            extra = params[seq[1],0]
+        else:
+            extra = 0      
         alphas[1,0] = params[0:,0]  #an list all tokens
-        alphas[1,0,0] = 0  #can't stay at blank, same as the alphas[0,0,0] 
+        alphas[1,0,blank] = 0  #can't stay at blank, same as the alphas[0,0,0] 
+        leakage = extra 
         alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx, leakage)
 
     else:
         alphas[0,0,0] = params[blank,0]
         alphas[1,0,0] = params[seq[0],0]
         alpha_bar[0] =  alphas[0,0,0] + alphas[1,0,0]
+        extra = 0
+        leakage = extra 
         
     alphas[:,0,:] = alphas[:,0,:] /  alpha_bar[0]
     
@@ -305,8 +299,6 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         if (lowest_state-1) / 2 == pos: ### -2 for possible skip paths at the arnitrary state
             lowest_state = lowest_state - 2
         start = max(0,lowest_state) 
-        if start > 2*pos + 2:
-            leakage = 0
         for s in range(start,L):
             l = int((s-1)/2)
             # blank
@@ -314,8 +306,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 if s==0:
                     alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
-                    sum = check_arbitrary(alphas, s-1, t-1, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
-                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
+                    sum = check_arbitrary(alphas, s-1, t-1, pos, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    if sum is not None: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
                         ##in this version no need to remove for t=1, because state 2 is not initialized anymore
                         alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
                         ## extra duplication at empty state after arbitrary state
@@ -331,7 +323,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
                         * params[seq[l],t]
             elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension, and also consider the skip paths
-                sum = check_arbitrary(alphas, s-2, t-1, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                sum = check_arbitrary(alphas, s-2, t-1, pos, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
                 if l-2 < 0 or seq[l-2] == seq[l]: ###dont allow token skip
                     skip_token = 0
                 else:
@@ -356,13 +348,15 @@ def ctc_loss_denom(params, seq, pos, blank=0):
 
                     alphas[s,t,:] = (alphas[s,t-1,:].view(1,-1) * params[:,t].view(-1,1) * mask_ins).sum(-1) + skip_prob + empty_prob 
 
+        if start > 2*pos + 2:
+            leakage = 0
         alpha_bar[t] = get_alpha_bar(alphas, t, blank, pos, next_label_idx, leakage)
         alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
         leakage = leakage / alpha_bar[t]
         
     occ = alphas[2*pos+1,:,:].sum()
     llForward = torch.log(alpha_bar).sum()
-    return (-llForward, occ, alpha_bar)
+    return (-llForward,occ)
 
 def single_process(example, p_tokenizer, processor, model, max_context_len, out_path):
     row = example
@@ -392,24 +386,23 @@ def single_process(example, p_tokenizer, processor, model, max_context_len, out_
         p_list = list(p_set - spec_tokens - {p_from})
         ## select wrong phonemes
         p_to_pair = []
-        for i in range(5):
+        for i in range(8):
             p_to = p_list[random.randrange(0, len(p_list))]
             pid_to = p_tokenizer._convert_token_to_id(p_to)
             p_to_pair.append((p_to,pid_to))
         ##compute full context gop for correct 
         ll_self = ctc_loss(post_mat.transpose(0,1), pid_seq, blank=0)
-        ll_denom,occ,_ = ctc_loss_denom(post_mat.transpose(0,1), pid_seq, p_index, blank=0)
-        occ = max(1, occ.item())
+        ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), pid_seq, p_index, blank=0)
         #pdb.set_trace()
         gop = -ll_self + ll_denom
-        f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, "full", p_from, p_from, gop.item(), occ))  
+        f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, "full", p_from, p_from, gop.item(), occ.item()))  
         #wrong phonemes               
         for p_to, pid_to in p_to_pair:
             labels_replaced = pid_seq.clone()
             labels_replaced[p_index] = pid_to
             ll_self_replaced = ctc_loss(post_mat.transpose(0,1), labels_replaced, blank=0)
             gop_replaced = -ll_self_replaced + ll_denom
-            f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, "full", p_from, p_to, gop_replaced.item(), occ))
+            f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, "full", p_from, p_to, gop_replaced.item(), occ.item()))
         if p_index - context_range < 0 or p_index + context_range > len(pid_seq) - 1:
             print("not enough left or right context")  
             return
@@ -425,15 +418,14 @@ def single_process(example, p_tokenizer, processor, model, max_context_len, out_
                 #correct
                 labels = torch.Tensor(pid_seq[p_index-i:p_index + i + 1]).type(torch.int32) ## start from no context
                 ll_self = ctc_loss(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels, blank=0)
-                ll_denom,occ,_ = ctc_loss_denom(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels, i, blank=0)
-                occ = max(1, occ.item())
+                ll_denom,occ = ctc_loss_denom(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels, i, blank=0)
                 gop = -ll_self + ll_denom
-                f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, 2*i, p_from, p_from, gop.item(), occ))            
+                f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_from, 2*i, p_from, p_from, gop.item(), occ.item()))            
                 ##wrong
                 labels_replaced = torch.Tensor(labels_wrong[p_index-i:p_index + i + 1]).type(torch.int32) ## start from no context
                 ll_self_replaced = ctc_loss(post_mat[frame_range_l:frame_range_r+1,:].transpose(0,1), labels_replaced, blank=0)
                 gop_replaced = -ll_self_replaced + ll_denom
-                f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, 2*i, p_from, p_to, gop_replaced.item(),occ))
+                f.write("%s,%s,%s->%s,%s,%s\n"%(row['id']+"-"+str(p_index)+"-"+p_to, 2*i, p_from, p_to, gop_replaced.item(),occ.item()))
         
 
 #run viterbi and get the dict of range of each token, there might be blanks being skipped, we need to add dummy segment for those
@@ -498,7 +490,7 @@ if __name__ == "__main__":
     
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "max_context_len":context_len, "out_path":sys.argv[6]}, num_proc=15) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "max_context_len":context_len, "out_path":sys.argv[6]}, num_proc=10) 
     print("done")
     
     

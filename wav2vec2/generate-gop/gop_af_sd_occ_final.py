@@ -134,9 +134,9 @@ def ctc_loss(params, seq, blank=0):
     return -llForward
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
-##zero pos here starst from 0def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-def check_arbitrary(in_alphas, s, t, zero_pos=[]):
-    if torch.count_nonzero(in_alphas[s,t]) > 1:
+#zero_pos is used for blocking the path
+def check_arbitrary(in_alphas, s, t, pos, zero_pos=[]):
+    if (s-1)/2 == pos: ## is arbitrary
         if len(zero_pos) != 0:
             mask = torch.ones_like(in_alphas[s,t])
             for i in zero_pos:
@@ -145,7 +145,7 @@ def check_arbitrary(in_alphas, s, t, zero_pos=[]):
         else:
             return (in_alphas[s,t]).sum()
     else:
-        return False
+        return None
     
 ##we need to remove the duplication for the "arbitrary" state
 def get_alpha_bar(alphas, t, blank, pos, next_label, leakage):
@@ -191,10 +191,12 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alphas[2,0,0] = 0
         if len(seq) > 1:
             alphas[3,0,0] = params[seq[1],0]
+            ##### extra duplication at empty state after arbitrary state
+            extra = params[seq[1],0]
+        else:  
+            extra = 0
         alphas[1,0] = params[0:,0]  #an list all tokens
         alphas[1,0,blank] = 0  #can't stay at blank, same as the alphas[0,0,0] 
-        ##### extra duplication at empty state after arbitrary state
-        extra = params[seq[1],0]
         leakage = extra 
         alpha_bar[0] = get_alpha_bar(alphas, 0, blank, pos, next_label_idx, leakage)
 
@@ -219,8 +221,8 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                 if s==0:
                     alphas[s,t,0] = alphas[s,t-1,0] * params[blank,t]
                 else:
-                    sum = check_arbitrary(alphas, s-1, t-1, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
-                    if sum: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
+                    sum = check_arbitrary(alphas, s-1, t-1, pos, [blank]) # remove the pathes from blank state, because it's a duplicated path as the first term
+                    if sum is not None: ## the first blank(for current t) after the arbitrary state,need to collect the probability from the additional dimension
                         ##in this version no need to remove for t=1, because state 2 is not initialized anymore
                         alphas[s,t,0] = (alphas[s,t-1,0] + sum) * params[blank,t]
                         ## extra duplication at empty state after arbitrary state
@@ -236,7 +238,7 @@ def ctc_loss_denom(params, seq, pos, blank=0):
                     alphas[s,t,0] = (alphas[s,t-1,0] + alphas[s-1,t-1,0] + alphas[s-2,t-1,0]) \
                         * params[seq[l],t]
             elif pos == l-1: #last token is the arbitrary token, need to collect the probability from the additional dimension, and also consider the skip paths
-                sum = check_arbitrary(alphas, s-2, t-1, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
+                sum = check_arbitrary(alphas, s-2, t-1, pos, [blank,seq[l]])  ##remove the entry of the blank and the  "l"th token in the last dim, because it's already covered in other terms with the same path
                 if l-2 < 0 or seq[l-2] == seq[l]: ###dont allow token skip
                     skip_token = 0
                 else:

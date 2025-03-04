@@ -30,7 +30,7 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
 
 
 def labelError(GOP_file, error_list, tran_file):
-    gop_df = readGOPToDF(GOP_file,weight=1,mode="no-norm")
+    gop_df = readGOPToDF(GOP_file,weight=1,mode=None)
     tran_df = readTRANToDF(tran_file)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
     tran_list = tran_df['uttid'].unique()
@@ -146,7 +146,7 @@ def readGOPToDF(ark_file, weight=1, mode="no-norm"):
             elif mode == "round":
                 occ_new = max(1,np.round(cur_occ))*weight
             elif mode == "ceiling":
-                occ_new = np.ceil(cur_occ)*weight
+                occ_new = max(1, np.ceil(cur_occ))*weight
             elif mode == "floor":
                 occ_new = max(1,np.floor(cur_occ))*weight
             elif mode == "no-norm":
