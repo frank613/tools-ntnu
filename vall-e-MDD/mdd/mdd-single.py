@@ -163,12 +163,15 @@ def resol_conversion(pid_seq, rate_target):
     return pid_seq_ret
  
 ### non-batch version
-def get_logits(model, text_in, prop_in, resp_in, lang, pid_seq, device, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=0):
-    pdb.set_trace() 
+def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, device, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=0):
     pid_seq = resol_conversion(pid_seq, rate_target=75)
     assert pid_seq[-1][-1] == resp_in.shape[0] 
     b_size = len(pid_seq)
-    lenth_in = resp_in.shape[0].item()
+    if cmp_len:
+        lenth_in = resp_in.shape[0]
+        len_list = [ lenth_in ] * b_size
+    else:
+        len_list = None
     if masking_nar_level_0:
         ## to batch
         input_kwargs = dict(
@@ -176,14 +179,14 @@ def get_logits(model, text_in, prop_in, resp_in, lang, pid_seq, device, cmp_len=
                     task_list=["tts"] * b_size,
                     raw_text_list=None,
                     proms_list=[prop_in] * b_size,
-                    resp_list = [resp_in] * b_size,
-                    len_list = [ lenth_in ] * b_size,
+                    resps_list = [resp_in] * b_size,
                     lang_list=[lang] * b_size,
                     disable_tqdm=False,
                     use_lora=True,
                     is_mdd=True,
                     is_masking_nar_level_0=True,
-                    pid_seq = pid_seq
+                    pid_seq = pid_seq,
+                    total_levels = total_levels
                 )
     else: ## single processing
         sys.exit("for now, only support masking")
@@ -199,13 +202,16 @@ def get_logits(model, text_in, prop_in, resp_in, lang, pid_seq, device, cmp_len=
             #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
             sys.exit("not yet support to compare length")
                
-        ## NAR+len
+        ## NAR+len, return a list of avg-posterior, the length is based on total_levels
         ret_value = model( **input_kwargs)
+        pdb.set_trace()
  
     else:
         sys.exit("not supporting AR+NAR in this version")
-    _logger.info(f"decoding done")
+    pdb.set_trace()
+    _logger.info(f"MDD done")
     
+    return ret_value
     
     
 
@@ -228,7 +234,7 @@ if __name__ == "__main__":
     
     ## load the model and engine(engine helps to create model and load from stat_dict)
     #cfg.ckpt_dir = Path(sys.argv[1])
-    engines = load_engines(training=False)
+    engines = load_engines(training=False, is_mdd=True)
     assert len(engines) == 1
     models = []
     for name, engine in engines.items():
@@ -255,15 +261,13 @@ if __name__ == "__main__":
     ##prompt
     audio_in_path = Path(sys.argv[2])
     prompt, resp = get_emb(audio_in_path, device, trim_length=3, remove_last_n=2, noise=False)
-    
     ##step 1, get segmentation (pid_seq = list of (pid, start_idx, end_idx)
     pid_seq = ctm_dict[uid]
     
-    ##step 2, get logits
+    ##step 2, get avg_posterior for each phoneme
     #set_seed()
-    pdb.set_trace()
     with torch.no_grad():
-        logits = get_logits(model, phns, prompt, resp, lang, pid_seq, device)
+        avg_post_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, device)
            
     ##unload qnt models
     load_engines.cache_clear()
