@@ -1,3 +1,11 @@
 export PYTHONPATH=/home/xinweic/git-repos/vall-e/
 
-python mdd-single.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./out_cao_pron_noise.gop
+python mdd-single.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./out_cao_pron_noise.gop
+
+python mdd-batch.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./outputs/nar-level-0/gop
+
+export CUDA_VISIBLE_DEVICES=-1
+python mdd-batch-all-levels-cpu.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./data/data-for-vallE/cmu-kids/utt2dur ./outputs-all-levels/nar-0-all-levels-log-model-fixed/gop
+
+export CUDA_VISIBLE_DEVICES=2
+python mdd-batch-all-levels-gpu.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./data/data-for-vallE/cmu-kids/utt2dur ./outputs-all-levels/nar-0-all-levels-log-model-fixed/gop

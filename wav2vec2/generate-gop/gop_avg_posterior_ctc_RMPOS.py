@@ -190,6 +190,7 @@ if __name__ == "__main__":
             gops_list.append([])
             for order, (pid,start_idx, end_idx, p_raw) in enumerate(pid_seq):
                 length_seg = end_idx - start_idx
+                ##should take log first then mean
                 post_avg = post_mat[start_idx:end_idx][:,pid].mean()
                 gops_list[len(key_list)-1].append((p_raw, torch.log(post_avg)))   
        

@@ -247,6 +247,7 @@ if __name__ == "__main__":
                 l_new = int((state - 1)/2) 
                 if state != last_state:
                     if post_count != 0: ##previous state is not blank, token->blank or token1->token2
+                        ## should we fix to compute log first then average?
                         gop_list.append((p_tokenizer._convert_id_to_token(pids[l]), torch.log(post_total/post_count)))
                         post_count = 0
                         post_total = 0

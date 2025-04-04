@@ -92,8 +92,23 @@ def get_promp_emb(audio_in_path, device, trim_length=0, noise=0):
         res = torch.zeros((cfg.dataset.frames_per_second * trim_length, resp_level), dtype=torch.int16)
     return res.to(device=device, dtype=torch.int16)
 
-def get_tts_results(model, text_in, prop_in, lang, is_ar, device, out_path): 
-    duration_padding = 1.05
+def get_emb(audio_in_path, trim_length=0, noise=False):
+    full = encode_audio(audio_in_path) 
+    if not noise:
+        res = encode_audio(audio_in_path, trim_length=trim_length)
+    else:
+        noisy_code = load_artifact(Path("/home/xinweic/git-repos/vall-e/data/noise.enc"))
+        if trim_length:
+            res = repeat_extend_audio( noisy_code, int( cfg.dataset.frames_per_second * trim_length ) )
+        else:
+            res = noisy_code
+    #return res.to(device=device, dtype=torch.int16), full.to(device=device, dtype=torch.int16)
+    return res.to(dtype=torch.int16), full.to(dtype=torch.int16)
+
+def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, fix_level=0, out_path=None): 
+    #duration_padding = 1.05
+    #if len(reps_in) != fix_level+1:
+    #    sys.exit("in input reps should be of length quant_level+1")
     input_kwargs = dict(
                 text_list=[text_in], 
                 raw_text_list=None,
@@ -101,20 +116,21 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, out_path):
                 lang_list=[lang],
                 disable_tqdm=False,
                 use_lora=True,
+                resps_list=[reps_in[:, :fix_level+1]],
+                fix_level = fix_level,
             )
 
     if not is_ar: ## len+NAR
         for i in range(5):
             ## predict len
-            len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
-            # add an additional X seconds
-            len_list = [ int(l * duration_padding) for l in len_list ]
+            #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
+            len_list = [len(reps_in)]
             ## NAR
             kwargs = {"temperature": 2}
             resps_list = model( **input_kwargs, len_list=len_list, task_list=["tts"], **(kwargs))
             ## decode
             resps = resps_list[0]
-            wav, sr = qnt.decode_to_file(resps, out_path+f"-{i}.wav", device=device)
+            wav, sr = qnt.decode_to_file(resps, out_path+f"-fix-level{fix_level}-{i}.wav", device=device)
     else:
         sys.exit("not supporting AR+NAR in this version")
     _logger.info(f"decoding done")
@@ -125,7 +141,7 @@ if __name__ == "__main__":
     print(sys.argv)
     if len(sys.argv) != 4:
         sys.exit("this script takes 3 arguments <model-ckpt-sft> <in-audio-wav-file> <out-wave-path> \n \
-        , it loads the model and run TTS based on input prompt")
+        , it loads the model and run TTS based on input prompt fixing the level-0 code")
         
     
     ## default cfg and then update cfg from model, similar to inferece.py
@@ -139,7 +155,7 @@ if __name__ == "__main__":
     
     ## load the model and engine(engine helps to create model and load from stat_dict)
     #cfg.ckpt_dir = Path(sys.argv[1])
-    engines = load_engines(training=False)
+    engines = load_engines(training=False, is_mdd=True)
     assert len(engines) == 1
     models = []
     for name, engine in engines.items():
@@ -154,22 +170,23 @@ if __name__ == "__main__":
     phn_symmap = get_phone_symmap()
     #text_in = "A scientist walked through a field"
     #text_in = "The day is friday, I am happy"
-    #text_in = "I am Xinwei, the day is friday, I am happy"
-    text_in = "I am Xinwei, the day is friday, I am happy"
+    text_in = "I am Xinwei"
     #text_in = "I want to try how I beat Elon Mask in the future"
     #text_in = "A SCIENTIST WALKED THROUGH A FIELD"
     #text_in = "a large size in stockings is hard to sell"
     lang_code = "en-us"
     phns,lang = get_text(text_in, device, phn_symmap, lang=lang_code)
-    pdb.set_trace()
+    #pdb.set_trace()
     ##prompt
     audio_in_path = Path(sys.argv[2])
-    prompt = get_promp_emb(audio_in_path, device, trim_length=3, noise=0)
-    
+    prompt,resps = get_emb(audio_in_path, trim_length=3, noise=0)
+    ###disable prompt
+    #prompt=None
+    #text_in = None
     ## TTS
     set_seed()
     with torch.no_grad():
-        get_tts_results(models[0], phns, prompt, lang, False, device, sys.argv[3])
+        get_tts_results(models[0], phns, prompt, lang, False, device, resps, fix_level=0, out_path=sys.argv[3])
     
     ##unload qnt models
     load_engines.cache_clear()

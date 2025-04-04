@@ -1,1 +1,3 @@
 python analyze_real_auc.py ./gops/cmu_gv3.gop_new uttid.temp label_mapped.txt ./cmu_gv3.json
+
+python analyze_real_auc_rmSIL.py ./gop-tts/NAR0-noise-prompt.gop uttid.temp label_mapped.txt ./vall-e-jsons/NAR0-noise-prompt.json

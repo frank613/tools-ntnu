@@ -7,3 +7,5 @@ python gop_avg_posterior_ctc.py ./transcriptions/cmu_ali.txt ./models/ctc-en/ da
 python gop_ctc_align_forCE.py ./transcriptions/cmu.ctm ./models/wav2vec2_phoneme_ce/ data-new/data-for-w2v2/cmu-kids/metadata.csv ./processor-en-ce/ ./out-gops/cmu_ctc_align_CE.gop
 
 python gop_ali_free_giamp_v5_normnew.py ./transcriptions/cmu.ctm ./out-models/rCTC-large-from-CTC/checkpoint-6500/  data-new/data-for-w2v2/cmu-kids/metadata.csv ./out-models/rCTC-large-from-CTC/processor_config_gop/ ./test-gop-normnew/test
+
+python gop_ctc_align_fixed.py ./transcriptions/cmu.ctm ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/checkpoint-8000/ data-new/data-for-w2v2/cmu-kids/metadata.csv ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/processor_config_gop/ None ./cmu_ctc_align_fixed.gop

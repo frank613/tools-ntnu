@@ -92,6 +92,19 @@ def get_promp_emb(audio_in_path, device, trim_length=0, noise=0):
         res = torch.zeros((cfg.dataset.frames_per_second * trim_length, resp_level), dtype=torch.int16)
     return res.to(device=device, dtype=torch.int16)
 
+def get_emb(audio_in_path, trim_length=0, noise=False):
+    full = encode_audio(audio_in_path) 
+    if not noise:
+        res = encode_audio(audio_in_path, trim_length=trim_length)
+    else:
+        noisy_code = load_artifact(Path("/home/xinweic/git-repos/vall-e/data/noise.enc"))
+        if trim_length:
+            res = repeat_extend_audio( noisy_code, int( cfg.dataset.frames_per_second * trim_length ) )
+        else:
+            res = noisy_code
+    #return res.to(device=device, dtype=torch.int16), full.to(device=device, dtype=torch.int16)
+    return res.to(dtype=torch.int16), full.to(dtype=torch.int16)
+
 def get_tts_results(model, text_in, prop_in, lang, is_ar, device, out_path): 
     duration_padding = 1.05
     input_kwargs = dict(
@@ -154,22 +167,38 @@ if __name__ == "__main__":
     phn_symmap = get_phone_symmap()
     #text_in = "A scientist walked through a field"
     #text_in = "The day is friday, I am happy"
-    #text_in = "I am Xinwei, the day is friday, I am happy"
     text_in = "I am Xinwei, the day is friday, I am happy"
     #text_in = "I want to try how I beat Elon Mask in the future"
     #text_in = "A SCIENTIST WALKED THROUGH A FIELD"
     #text_in = "a large size in stockings is hard to sell"
     lang_code = "en-us"
     phns,lang = get_text(text_in, device, phn_symmap, lang=lang_code)
-    pdb.set_trace()
+    #pdb.set_trace()
     ##prompt
     audio_in_path = Path(sys.argv[2])
-    prompt = get_promp_emb(audio_in_path, device, trim_length=3, noise=0)
+    prompt, resp = get_emb(audio_in_path, trim_length=3, noise=0)
     
+    ##reconstruct
+    wav, sr = qnt.decode_to_file(resp, sys.argv[3]+f"-recon.wav", device=device)
+    for i in range(8):
+        resp_m = resp.clone()
+        resp_m[:,i] = 0
+        wav, sr = qnt.decode_to_file(resp_m, sys.argv[3]+f"-remove-{i}.wav", device=device)
+        
+    for i in range(8):
+        resp_m = resp.clone()
+        resp_m[:,:i] = 0
+        resp_m[:,i+1:] = 0
+        wav, sr = qnt.decode_to_file(resp_m, sys.argv[3]+f"-keep-only-{i}.wav", device=device)
+        
+    for i in range(8):
+        resp_m = resp.clone()
+        resp_m[:,i+1:] = 0
+        wav, sr = qnt.decode_to_file(resp_m, sys.argv[3]+f"-keep-first-{i}.wav", device=device)
     ## TTS
-    set_seed()
-    with torch.no_grad():
-        get_tts_results(models[0], phns, prompt, lang, False, device, sys.argv[3])
+    # set_seed()
+    # with torch.no_grad():
+    #     get_tts_results(models[0], phns, prompt, lang, False, device, sys.argv[3])
     
     ##unload qnt models
     load_engines.cache_clear()
