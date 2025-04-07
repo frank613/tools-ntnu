@@ -12,7 +12,7 @@ from vall_e.emb.qnt import decode_to_file, unload_model, trim_random, repeat_ext
 from vall_e.emb import g2p, qnt
 from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer
 import re
-
+import math
 import pdb
 
 _logger = logging.getLogger(__name__)
@@ -155,7 +155,23 @@ def mdd_mask( pid_seq, index, length, device):
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
     return mask
 
-def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predict_level_0=True, pid_seq=None, mask_index=None, out_path=None): 
+## convert resolution from ctm alignment to target code rate(in frame-shift/unit)
+def resol_conversion(pid_seq, rate_target):
+    #pdb.set_trace()
+    pid_seq_ret = []
+    ms_frame = round(1000/rate_target, 5)
+    ## *2 because ctm file uses default frame_shift = 10
+    total_len = math.floor(float(pid_seq[-1][2]*2*1000 / ms_frame))
+    time_end = [ e for id,s,e in pid_seq ] 
+    total_time = time_end[-1]
+    frame_end = [ math.ceil((time/total_time)*total_len) for time in time_end ]  ### ceiling for covering a wider range of code in case of phoneme state transition 
+    start = 0
+    for (pid,_,_),frame_e in zip(pid_seq, frame_end):
+        pid_seq_ret.append([pid, start, frame_e])
+        start = frame_e - 1  ### -1 for covering a wider range of code in case of phoneme state transition 
+    return pid_seq_ret
+
+def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predict_level_0=True, pid_seq=None, mask_index=None, target_phoneme=None, n_step_level_0=None, out_path=None): 
 
     ##do single mask
     if pid_seq is None or mask_index is None:
@@ -171,6 +187,7 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predi
                 resps_list=[reps_in[:, 0]],
                 predict_level_0 = predict_level_0,
                 phoneme_mask=phoneme_mask,
+                n_step_level_0 = n_step_level_0,
             )
 
     if not is_ar: ## len+NAR
@@ -183,7 +200,7 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predi
             resps_list = model( **input_kwargs, len_list=len_list, task_list=["tts"], **(kwargs))
             ## decode
             resps = resps_list[0]
-            wav, sr = qnt.decode_to_file(resps, out_path+f"-masked-no-predict-{i}.wav", device=device)
+            wav, sr = qnt.decode_to_file(resps, out_path+f"MPT-withAP-{n_step_level_0}-step-{mask_index}_{target_phoneme}-{i}.wav", device=device)
     else:
         sys.exit("not supporting AR+NAR in this version")
     _logger.info(f"decoding done")
@@ -235,14 +252,18 @@ if __name__ == "__main__":
     audio_in_path = Path(sys.argv[2])
     prompt,resps = get_emb(audio_in_path, trim_length=3, noise=0)
     pid_seq = ctm_dict[uid]
+    pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second)
     ###disable prompt
     #prompt=None
     #text_in = None
+    #text_null = null_text = [ torch.tensor([1, 2)]?
     ## TTS
-    mask_index = 0
+    mask_index = 2
+    number_steps_level_0 = 1
+    target_phoneme=p_tokenizer._convert_id_to_token(int(pid_seq[mask_index][0]))
     set_seed()
     with torch.no_grad():
-        get_tts_results(models[0], phns, prompt, lang, False, device, resps, predict_level_0=False, pid_seq=pid_seq, mask_index=mask_index, out_path=sys.argv[6])
+        get_tts_results(models[0], phns, prompt, lang, False, device, resps, predict_level_0=True, pid_seq=pid_seq, mask_index=mask_index, target_phoneme=target_phoneme, n_step_level_0=number_steps_level_0, out_path=sys.argv[6])
     
     ##unload qnt models
     load_engines.cache_clear()
