@@ -181,8 +181,8 @@ if __name__ == "__main__":
     audio_in_path = Path(sys.argv[2])
     prompt,resps = get_emb(audio_in_path, trim_length=3, noise=0)
     ###disable prompt
-    #prompt=None
-    #text_in = None
+    prompt = None
+    phns = None
     ## TTS
     set_seed()
     with torch.no_grad():

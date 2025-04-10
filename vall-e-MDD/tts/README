@@ -1,4 +1,6 @@
 export PYTHONPATH=/home/xinweic/git-repos/vall-e/
 python tts-single.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ./out.wav
 
+python tts-single-fixed-generation.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/wav-users/Xinwei_slow.wav ./out-fixed/audio-prompt/out-xinwei-fix-level0-no-text-prompt
+
 python tts-single-masked-generation.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ../prep/transcriptions-cmu/processor-en-ce/ ./out-masked/no-pred-level0/
