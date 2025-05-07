@@ -3,11 +3,10 @@ from pathlib import Path
 import torch
 import logging
 import numpy as np
-from vall_e.utils import to_device, set_seed, clamp, wrapper as ml
+from vall_e.utils import to_device, set_seed, clamp
 from vall_e.config import cfg
 from vall_e.engines import load_engines
 from vall_e.data import get_phone_symmap, get_lang_symmap, tokenize, text_tokenize, sentence_split
-from vall_e.models.ar_nar import AR_NAR
 from vall_e.emb.qnt import decode_to_file, unload_model, trim_random, repeat_extend_audio, concat_audio, merge_audio
 from vall_e.emb import g2p, qnt
 from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer
@@ -195,7 +194,7 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predi
             )
 
     if not is_ar: ## len+NAR
-        for i in range(5):
+        for i in range(15):
             ## predict len
             #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
             len_list = [len(reps_in)]
@@ -204,8 +203,10 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predi
             resps_list, _ = model( **input_kwargs, len_list=len_list, task_list=["tts"], **(kwargs))
             ## decode
             resps = resps_list[0]
-            wav, sr = qnt.decode_to_file(resps, out_path+f"-{mask_index}_{target_phoneme}-{i}.wav", device=device)
-            #wav, sr = qnt.decode_to_file(resps, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device)
+            pid, l, r = pid_seq[mask_index]
+            code_to_gen = resps[l:r,:]
+            #wav, sr = qnt.decode_to_file(code_to_gen, out_path+f"-{mask_index}_{target_phoneme}-{i}.wav", device=device)
+            wav, sr = qnt.decode_to_file(code_to_gen, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device)
     else:
         sys.exit("not supporting AR+NAR in this version")
     _logger.info(f"decoding done")
@@ -262,7 +263,7 @@ if __name__ == "__main__":
     prompt=None
     #phns = None
     #phns = torch.tensor([1, 2], device=device)
-    phns[4] = 4
+    #phns[4] = 4
     #phns[1] = 101
     #phns = torch.cat((phns[:4], phns[4+1:]))
     #phns[:] = 4

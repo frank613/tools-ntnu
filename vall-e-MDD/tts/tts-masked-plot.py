@@ -150,15 +150,16 @@ def read_trans(tran_path):
     return tran_map
 
 def mdd_mask( pid_seq, index, length, mask_ratio, device):
+    ##return the original index, not the extended
     mask = torch.full((length,), False, dtype=torch.bool, device=device )
-    pid, l, r = pid_seq[index]
+    pid, l_orig, r_orig = pid_seq[index]
     if mask_ratio < 1:
         sys.exit("mask_ratio must greater than 1") 
-    extend = math.floor((r-l) * (mask_ratio - 1) / 2)
-    l = l - extend if l - extend >= 0 else 0
-    r = r + extend if r + extend <= length-1 else length-1
+    extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
+    l = l_orig - extend if l_orig - extend >= 0 else 0
+    r = r_orig + extend if r_orig + extend <= length-1 else length-1
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
-    return mask,l,r
+    return mask,l_orig,r_orig
 
 ## convert resolution from ctm alignment to target code rate(in frame-shift/unit)
 def resol_conversion(pid_seq, rate_target):
@@ -176,6 +177,16 @@ def resol_conversion(pid_seq, rate_target):
         start = frame_e - 1  ### -1 for covering a wider range of code in case of phoneme state transition 
     return pid_seq_ret
 
+def compute_gop(logit, resps, left, right):
+    index1 = list(range(left,right))
+    index2 = resps[left:right].tolist()
+    logit = torch.tensor(logit)
+    assert len(index1) == len(index2)
+    avg_posterior = logit[index1, index2].log().mean()
+    pooled_value = logit[index1[0]:index1[0]+len(index1), :].mean(dim=0)[index2].mean().log().item()
+    return avg_posterior, pooled_value
+    
+    
 ##plot the graph
 def plot_activations(logits_list, resps_out, resps_in, target_phoneme, left, right, out_path):
     #pdb.set_trace()
@@ -184,12 +195,13 @@ def plot_activations(logits_list, resps_out, resps_in, target_phoneme, left, rig
     ##get the last "len" logits
     seq_len = resps_out.shape[0]
     logits_list = [ logits[0][-seq_len:, :].softmax(dim=-1).cpu().numpy() for logits in logits_list]
-    #pdb.set_trace()
     
     plt.rcParams['font.size'] = 50
     plt.tight_layout()
     fig, axes = plt.subplots(len(logits_list),1,figsize=(25*len(logits_list), 300), sharex="col",layout="constrained")
     for i in range(len(logits_list)):
+        ##compute gop
+        gop, gop_pooled = compute_gop(logits_list[i], resps_in[:,i], left, right)
         ##heat map
         #pdb.set_trace()
         im = axes[i].imshow(np.transpose(logits_list[i]), norm="linear", origin="lower") #cmap="YlGn")
@@ -204,7 +216,9 @@ def plot_activations(logits_list, resps_out, resps_in, target_phoneme, left, rig
         ##mask
         #axes[i].axvspan(left,right, color='0.5')
         axes[i].axvline(left, color='g')
-        axes[i].axvline(right, color='g')
+        axes[i].axvline(right-1, color='g')
+        
+        axes[i].text(left+right/2, 0, f"GOP for {target_phoneme}:{gop}, GOP-pooled:{gop_pooled}", size="large", color="white")
         
         axes[i].set_aspect("auto")
         axes[i].set_title(f"Masking phoneme {target_phoneme}, code level {i}")
@@ -243,11 +257,10 @@ def get_tts_logtis_and_plot(model, text_in, prop_in, lang, is_ar, device, reps_i
             ## NAR
             kwargs = {"temperature": 1}
             resps_list_out, logits_list = model( **input_kwargs, len_list=len_list, task_list=["tts"], **(kwargs))
-            #pdb.set_trace()
             ## decode
             resps_out = resps_list_out[0]
-            plot_activations(logits_list, resps_out, reps_in, target_phoneme, left=l, right=r, out_path=out_path+f"CFG25-plot-{mask_index}_{target_phoneme}-{i}.png")
-            #wav, sr = qnt.decode_to_file(resps, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device)
+            plot_activations(logits_list, resps_out, reps_in, target_phoneme, left=l, right=r, out_path=out_path+f"-plot-{mask_index}_{target_phoneme}-{i}.png")
+            #wav, sr = qnt.decode_to_file(resps, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device) 
     else:
         sys.exit("not supporting AR+NAR in this version")
     _logger.info(f"decoding done")
@@ -291,6 +304,7 @@ if __name__ == "__main__":
     
     #prepare input
     uid = "fabm2aa1"
+    #uid = "fabm2cb2"
     if uid not in uttid_list:
         sys.exit("can't find the uid in data")
     text_in = trans_map[uid]
@@ -306,11 +320,19 @@ if __name__ == "__main__":
     
     #phns = None
     #phns = torch.tensor([1, 2], device=device)
+    pdb.set_trace()
+    #phns[3] = 4
+    #phns[4] = phns[4]
     #phns[4] = 4
     #phns[1] = 101
     #phns = torch.cat((phns[:4], phns[4+1:]))
     #pdb.set_trace()
-    #text_null = null_text = [ torch.tensor([1, 2)]?
+    phns = torch.tensor([1, 2], device=device)
+    
+    #phns[:] = 4
+    #phns[0] = 1
+    #phns[-1] = 2
+    
     ipa_dict = cfg.tokenizer.get_vocab()
     ipa_dict_inv = {v:k for k,v in ipa_dict.items()}
     sym_list = [ f"{i}-{p}:{ipa_dict_inv[p]}" for i, p in enumerate(phns.tolist())]

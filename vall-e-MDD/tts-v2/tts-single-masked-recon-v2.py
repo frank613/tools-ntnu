@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 import logging
 import numpy as np
-from vall_e.utils import to_device, set_seed, clamp, wrapper as ml
+from vall_e.utils import to_device, set_seed, clamp
 from vall_e.config import cfg
 from vall_e.engines import load_engines
 from vall_e.data import get_phone_symmap, get_lang_symmap, tokenize, text_tokenize, sentence_split
@@ -227,6 +227,7 @@ if __name__ == "__main__":
     device = cfg.device
     resp_level = cfg.model.resp_levels
     
+    pdb.set_trace()
     ##load meta data
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(sys.argv[5])
     trans_map = read_trans(sys.argv[3])
@@ -235,16 +236,15 @@ if __name__ == "__main__":
     
     ## load the model and engine(engine helps to create model and load from stat_dict)
     #cfg.ckpt_dir = Path(sys.argv[1])
-    engines = load_engines(training=False, is_mdd=True)
-    assert len(engines) == 1
-    models = []
-    for name, engine in engines.items():
-        if type != torch.int8:
-            models.append(engine.module.to(device, dtype=dtype if not amp else torch.float32))
+    # engines = load_engines(training=False, is_mdd=True)
+    # assert len(engines) == 1
+    # models = []
+    # for name, engine in engines.items():
+    #     if type != torch.int8:
+    #         models.append(engine.module.to(device, dtype=dtype if not amp else torch.float32))
             
-    models[0].eval()
-    _logger.info(f"model loaded")
-
+    # models[0].eval()
+    # _logger.info(f"model loaded")
     phn_symmap = get_phone_symmap()
     
     #prepare input
@@ -258,32 +258,32 @@ if __name__ == "__main__":
     prompt,resps = get_emb(audio_in_path, trim_length=3, noise=0)
     pid_seq = ctm_dict[uid]
     pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second)
-    ###disable prompt
-    prompt=None
-    #phns = None
-    #phns = torch.tensor([1, 2], device=device)
-    phns[4] = 4
-    #phns[1] = 101
-    #phns = torch.cat((phns[:4], phns[4+1:]))
-    #phns[:] = 4
-    #phns[0] = 1
-    #phns[-1] = 2
-    #phns = torch.tensor([1, 2], device=device)
-    if phns is not None: 
-        ipa_dict = cfg.tokenizer.get_vocab()
-        ipa_dict_inv = {v:k for k,v in ipa_dict.items()}
-        sym_list = [ f"{i}-{p}:{ipa_dict_inv[p]}" for i, p in enumerate(phns.tolist())]
-        print(sym_list)
-    ## TTS
-    mask_index = 3
-    number_steps_level_0 = 1
+ 
+    ## Recon
     mask_ratio = 1
-    target_phoneme=p_tokenizer._convert_id_to_token(int(pid_seq[mask_index][0]))
-    set_seed()
-    with torch.no_grad():
-        get_tts_results(models[0], phns, prompt, lang, False, device, resps, predict_level_0=True, pid_seq=pid_seq, mask_index=mask_index, target_phoneme=target_phoneme, n_step_level_0=number_steps_level_0, mask_ratio=mask_ratio, out_path=sys.argv[6])
-    
-    ##unload qnt models
+    repeats = 1
+    for i, (pid, l_orig, r_orig) in enumerate(pid_seq):
+        if mask_ratio < 1:
+            sys.exit("mask_ratio must greater than 1") 
+        extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
+        l = l_orig - extend if l_orig - extend >= 0 else 0
+        r = r_orig + extend if r_orig + extend <= len(resps)-1 else len(resps)-1
+        ##this nemo codec must have at least 9 frames
+        if r-l < 9:
+            pad = 9-(r-l)
+            if l - pad >= 0:
+                l = l - pad
+            else:
+                r = r + pad
+        if repeats != 1:
+            #exp_size = repeats * (r-l)
+            code_to_gen = resps[l:r,:].repeat(repeats,1)
+        else:
+            code_to_gen = resps[l:r,:]
+            #extend instead of cut
+            #code_to_gen = resps[0:r,:]
+        target_phoneme = p_tokenizer._convert_id_to_token(pid)
+        wav, sr = qnt.decode_to_file(code_to_gen, sys.argv[6]+f"-{i}-{target_phoneme}.wav", device=device)
     load_engines.cache_clear()
     unload_model()
     

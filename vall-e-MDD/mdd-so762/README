@@ -1,0 +1,5 @@
+export PYTHONPATH=/home/xinweic/git-repos/vall-e/
+export CUDA_VISIBLE_DEVICES=-1
+python mdd-gpu-diff-forSO.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ./data/data-for-vallE/speechocean762/metadata.csv ../prep-so/transcriptions-so/sentence_all.txt ../prep-so/transcriptions-so/so_test.ctm ../prep-so/transcriptions-so/processor-en-ce/ ./data/data-for-vallE/speechocean762/utt2dur.test ./outputs-all-levels/test-diff-blank/test-diff-blank-all-levels
+
+python mdd-gpu-diff-forSO.py ~/git-repos/vall-e-hf/vall-e/models/ckpt/ar+nar-len-llama-8/ckpt/fp32.sft ./data/data-for-vallE/speechocean762/metadata.csv ../prep-so/transcriptions-so/sentence_all.txt ../prep-so/transcriptions-so/so_test.ctm ../prep-so/transcriptions-so/processor-en-ce/ ./data/data-for-vallE/speechocean762/utt2dur.train ./outputs-all-levels/train-diff-blank/train-diff-blank-all-levels

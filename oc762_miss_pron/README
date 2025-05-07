@@ -1,3 +1,6 @@
 py38
 python evaluate_gop.py ./gops/so762_gv1.gop ./metadata.csv ./utt2dur_train ./utt2dur_test
 python evaluate_gop_feats.py ./gops/all_gop.feats ./metadata.csv ./utt2dur_train ./utt2dur_test
+
+python evaluate_gop_model_kaldi.py ./gop_kaldi_combined.scp ./metadata.csv ./utt2dur.train ./utt2dur.test
+python evaluate_gop_feats_kaldi.py ./feat_kaldi_combined.scp ./metadata.csv ./utt2dur.train ./utt2dur.test

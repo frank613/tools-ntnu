@@ -194,7 +194,7 @@ def resol_conversion(pid_seq, rate_target):
     return pid_seq_ret
  
 ### non-batch version
-def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=0):
+def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=8):
     pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second) ## 75 for current config
     ##kaldi will randomly cut 10ms/20ms(1 or 2 frames) in the number of MFCC features, so we extend the SIL(or other phonemes in the last) to match the number of codes  
     frame_diff = resp_in.shape[0] - pid_seq[-1][-1]
@@ -225,12 +225,13 @@ def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=F
                     is_mdd=True,
                     is_masking_nar_level_0=True,
                     pid_seq = pid_seq,
-                    total_levels = total_levels
+                    total_levels = total_levels,
+                    cfg_strength_lv0 = 2.5
                 )
     else: ## single processing
         sys.exit("for now, only support masking")
-    if total_levels < 0 or total_levels > model.config.resp_levels:
-        sys.exit("specify a correct level range, usually from [0,7]")
+    if total_levels <= 0 or total_levels > model.config.resp_levels:
+        sys.exit("specify a correct level range, usually from [1,8]")
     ##first level
     if not is_ar_level_0: ## len+NAR
         if not 'nar' in model.config.capabilities:
@@ -241,13 +242,13 @@ def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=F
             #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
             sys.exit("not yet support to compare length")
                
-        ## NAR+len, return a list of avg-posterior, the length is based on total_levels
-        ret_value = model( **input_kwargs)
+        ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
+        ret_value_1, ret_value_2 = model( **input_kwargs)
     else:
         sys.exit("not supporting AR+NAR in this version")
     # pdb.set_trace()
     # _logger.info(f"MDD done")
-    return ret_value
+    return ret_value_1, ret_value_2
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, lang_code, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -348,18 +349,20 @@ def batch_process(batch, p_tokenizer, device, out_path=None):
             print("processing {0}".format(uid))    
             pid_seq = ctm_dict[uid]
             phns = torch.tensor(batch["phns"][i], device=device, dtype=torch.int16)
-            prompt = torch.tensor(batch["prompt"][i], device=device, dtype=torch.int16)
+            prompt = None
             resp = torch.tensor(batch["resp"][i], device=device, dtype=torch.int16)
             lang = torch.tensor(batch["lang"][i], device=device, dtype=torch.uint8)
-            avg_post_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8)
+            avg_post_list, pooled_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=1)
             ## convert L*T list to T*L
             avg_post_list = [list(x) for x in zip(*avg_post_list)]
-            assert len(pid_seq) == len(avg_post_list)
+            pooled_list = [list(x) for x in zip(*pooled_list)]
+            assert len(pid_seq) == len(avg_post_list) and len(avg_post_list) == len(pooled_list)
             ### write files      
             f.write(uid+'\n')
-            for i, avg_post in enumerate(avg_post_list):
-                gop = ",".join([ str(item) for item in avg_post])
-                f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid_seq[i][0])), gop))
+            for i, (avg_post, pooled_post) in enumerate(zip(avg_post_list,pooled_list)):
+                gop_avg = ",".join([ str(item) for item in avg_post])
+                gop_pool = ",".join([ str(item) for item in pooled_post])
+                f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid_seq[i][0])), gop_avg, gop_pool))
             f.write("\n")
     load_engines.cache_clear()
     unload_model()
@@ -404,7 +407,8 @@ if __name__ == "__main__":
     csv_path = Path(sys.argv[2])
     
     out_path = sys.argv[7]
-    last_utt = "mjsd3ac2"
+    #last_utt = "mjsd3ac2"
+    last_utt = None
     
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, lang_code="en-us", subset=subset_list, last=last_utt)

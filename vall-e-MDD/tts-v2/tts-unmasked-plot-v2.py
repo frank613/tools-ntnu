@@ -3,7 +3,7 @@ from pathlib import Path
 import torch
 import logging
 import numpy as np
-from vall_e.utils import to_device, set_seed, clamp, wrapper as ml
+from vall_e.utils import to_device, set_seed, clamp
 from vall_e.config import cfg
 from vall_e.engines import load_engines
 from vall_e.data import get_phone_symmap, get_lang_symmap, tokenize, text_tokenize, sentence_split
@@ -11,6 +11,7 @@ from vall_e.models.ar_nar import AR_NAR
 from vall_e.emb.qnt import decode_to_file, unload_model, trim_random, repeat_extend_audio, concat_audio, merge_audio
 from vall_e.emb import g2p, qnt
 from transformers.models.wav2vec2 import Wav2Vec2CTCTokenizer
+import matplotlib.pyplot as plt
 import re
 import math
 import pdb
@@ -149,15 +150,16 @@ def read_trans(tran_path):
     return tran_map
 
 def mdd_mask( pid_seq, index, length, mask_ratio, device):
+    ##return the original index, not the extended
     mask = torch.full((length,), False, dtype=torch.bool, device=device )
-    pid, l, r = pid_seq[index]
+    pid, l_orig, r_orig = pid_seq[index]
     if mask_ratio < 1:
         sys.exit("mask_ratio must greater than 1") 
-    extend = math.floor((r-l) * (mask_ratio - 1) / 2)
-    l = l - extend if l - extend >= 0 else 0
-    r = r + extend if r + extend <= length-1 else length-1
+    extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
+    l = l_orig - extend if l_orig - extend >= 0 else 0
+    r = r_orig + extend if r_orig + extend <= length-1 else length-1
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
-    return mask
+    return mask,l_orig,r_orig
 
 ## convert resolution from ctm alignment to target code rate(in frame-shift/unit)
 def resol_conversion(pid_seq, rate_target):
@@ -175,39 +177,86 @@ def resol_conversion(pid_seq, rate_target):
         start = frame_e - 1  ### -1 for covering a wider range of code in case of phoneme state transition 
     return pid_seq_ret
 
-def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predict_level_0=True, pid_seq=None, mask_index=None, target_phoneme=None, n_step_level_0=None, mask_ratio=1, out_path=None): 
+def compute_gop(logit, resps, left, right):
+    index1 = list(range(left,right))
+    index2 = resps[left:right].tolist()
+    logit = torch.tensor(logit)
+    assert len(index1) == len(index2)
+    avg_posterior = logit[index1, index2].log().mean()
+    pooled_value = logit[index1[0]:index1[0]+len(index1), :].mean(dim=0)[index2].mean().log().item()
+    return avg_posterior, pooled_value
+    
+    
+##plot the graph
+def plot_activations(logits, resps_out, resps_in, out_path):
+    #pdb.set_trace()
+    assert logits.shape[-1] == resps_out.shape[-1] and resps_out.shape == resps_in.shape
+    ##get the last "len" logits
+    assert logits.shape[0] >= resps_out.shape[0]
+    seq_len = resps_out.shape[0]
+    logits= logits[-seq_len:, :, :].softmax(dim=1).cpu().numpy() 
+    
+    
+    plt.rcParams['font.size'] = 50
+    plt.tight_layout()
+    fig, axes = plt.subplots(logits.shape[-1],1,figsize=(25*logits.shape[-1], 300), sharex="col",layout="constrained")
+    for i in range(logits.shape[-1]):
+        ##compute gop
+        #gop, gop_pooled = compute_gop(logits[:,:,i], resps_in[:,i], left, right)
+        ##heat map
+        #pdb.set_trace()
+        im = axes[i].imshow(np.transpose(logits[:,:,i]), norm="linear", origin="lower") #cmap="YlGn")
+        cbar =  axes[i].figure.colorbar(im, ax=axes[i])
+        cbar.ax.set_ylabel("normalized logits", rotation=-90, va="bottom")
+        ##input codes
+        #axes[i].step(np.arange(seq_len),resps_in[:,i].cpu().numpy(), "w-*", where="post", label="codes to be evaluated" )
+        axes[i].plot(np.arange(seq_len),resps_in[:,i].cpu().numpy(), "o--", color="white", alpha=0.5, label="codes to be evaluated" )
+        ##output codes
+        #axes[i].step(np.arange(seq_len),resps_out[:,i].cpu().numpy(), "r-*", where="post", label="sampled codes" )
+        axes[i].plot(np.arange(seq_len),resps_out[:,i].cpu().numpy(), "o--", color="red", alpha=0.5, label="sampled codes" )
+        ##mask
+        #axes[i].axvspan(left,right, color='0.5')
+        #axes[i].axvline(left, color='g')
+        #axes[i].axvline(right-1, color='g') 
+        #axes[i].text(left+right/2, 0, f"GOP for {target_phoneme}:{gop}, GOP-pooled:{gop_pooled}", size="large", color="white")
+        
+        axes[i].set_aspect("auto")
+        axes[i].set_title(f"Unmasked logits, for code level {i}")
+        axes[i].legend()
+        
+        
+    fig.supxlabel("Encodec frames")
+    fig.supylabel("Code numbers 0-9999")
+    plt.savefig(out_path)
 
-    ##do single mask
-    if pid_seq is None or mask_index is None:
-        sys.exit("must provide pid_seq and mask_index for masked generation")
-    phoneme_mask = mdd_mask(pid_seq, mask_index, len(reps_in), mask_ratio, device)
+def get_tts_logtis_and_plot(model, text_in, prop_in, lang, is_ar, device, reps_in, out_path=None): 
+
+
+    len_list = [len(reps_in)]
     input_kwargs = dict(
-                text_list=[text_in], 
-                raw_text_list=None,
+                phns_list=[text_in], 
                 proms_list=[prop_in],
                 lang_list=[lang],
+                task_list=["mdd-plot"],
+                len_list=len_list,
                 disable_tqdm=False,
                 use_lora=True,
-                resps_list=[reps_in[:, :1]],
-                predict_level_0 = predict_level_0,
-                phoneme_mask=phoneme_mask,
-                n_step_level_0 = n_step_level_0,
+                resps_list=[reps_in],
+                n_step_level_0 = 1,
             )
 
-    if not is_ar: ## len+NAR
-        for i in range(5):
-            ## predict len
-            #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
-            len_list = [len(reps_in)]
-            ## NAR
-            kwargs = {"temperature": 2}
-            resps_list, _ = model( **input_kwargs, len_list=len_list, task_list=["tts"], **(kwargs))
-            ## decode
-            resps = resps_list[0]
-            wav, sr = qnt.decode_to_file(resps, out_path+f"-{mask_index}_{target_phoneme}-{i}.wav", device=device)
-            #wav, sr = qnt.decode_to_file(resps, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device)
-    else:
-        sys.exit("not supporting AR+NAR in this version")
+    for i in range(1):
+        ## predict len
+        #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
+        len_list = [len(reps_in)]
+        ## NAR
+        kwargs = {"temperature": 0, "cfg_strength":2.5}
+        resps_list_out, logit_list = model( **input_kwargs, **(kwargs))
+        ## decode
+        resps_out = resps_list_out[0]
+        plot_activations(logit_list[0].transpose(0,1).transpose(1,2), resps_out, reps_in, out_path=out_path+f"-plot-unmasked-{i}.png")
+        #wav, sr = qnt.decode_to_file(resps, out_path+f"MNP-{mask_index}_{target_phoneme}-{i}.wav", device=device) 
+  
     _logger.info(f"decoding done")
     
 
@@ -216,7 +265,7 @@ if __name__ == "__main__":
     print(sys.argv)
     if len(sys.argv) != 7:
         sys.exit("this script takes 6 arguments <model-ckpt-sft> <in-audio-wav-file> <in-raw-text-file> <CTM-alignment-file> <gop-tokenizer-path> <out-wave-path> \n \
-        , it loads the model and run TTS based on input prompt based on the masked level-0 code")
+        , it maskes level-0 code and plot the activations")
           
     ## default cfg and then update cfg from model, similar to inferece.py
     cfg.load_model(Path(sys.argv[1]))
@@ -249,6 +298,7 @@ if __name__ == "__main__":
     
     #prepare input
     uid = "fabm2aa1"
+    #uid = "fabm2cb2"
     if uid not in uttid_list:
         sys.exit("can't find the uid in data")
     text_in = trans_map[uid]
@@ -258,30 +308,36 @@ if __name__ == "__main__":
     prompt,resps = get_emb(audio_in_path, trim_length=3, noise=0)
     pid_seq = ctm_dict[uid]
     pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second)
+    
     ###disable prompt
     prompt=None
+    
     #phns = None
     #phns = torch.tensor([1, 2], device=device)
-    phns[4] = 4
+    #phns[3] = 4
+    #phns[4] = phns[4]
+    #phns[4] = 4
     #phns[1] = 101
     #phns = torch.cat((phns[:4], phns[4+1:]))
+    #pdb.set_trace()
+    #phns = torch.tensor([1, 2], device=device)
+    
     #phns[:] = 4
     #phns[0] = 1
     #phns[-1] = 2
-    #phns = torch.tensor([1, 2], device=device)
-    if phns is not None: 
-        ipa_dict = cfg.tokenizer.get_vocab()
-        ipa_dict_inv = {v:k for k,v in ipa_dict.items()}
-        sym_list = [ f"{i}-{p}:{ipa_dict_inv[p]}" for i, p in enumerate(phns.tolist())]
-        print(sym_list)
+    
+    ipa_dict = cfg.tokenizer.get_vocab()
+    ipa_dict_inv = {v:k for k,v in ipa_dict.items()}
+    sym_list = [ f"{i}-{p}:{ipa_dict_inv[p]}" for i, p in enumerate(phns.tolist())]
+    print(sym_list)
     ## TTS
-    mask_index = 3
-    number_steps_level_0 = 1
-    mask_ratio = 1
-    target_phoneme=p_tokenizer._convert_id_to_token(int(pid_seq[mask_index][0]))
+    # mask_index = 3
+    #number_steps_level_0 = 1
+    # mask_ratio = 1
+    # target_phoneme=p_tokenizer._convert_id_to_token(int(pid_seq[mask_index][0]))
     set_seed()
     with torch.no_grad():
-        get_tts_results(models[0], phns, prompt, lang, False, device, resps, predict_level_0=True, pid_seq=pid_seq, mask_index=mask_index, target_phoneme=target_phoneme, n_step_level_0=number_steps_level_0, mask_ratio=mask_ratio, out_path=sys.argv[6])
+        get_tts_logtis_and_plot(models[0], phns, prompt, lang, False, device, resps, out_path=sys.argv[6])
     
     ##unload qnt models
     load_engines.cache_clear()

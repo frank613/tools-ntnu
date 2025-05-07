@@ -24,7 +24,7 @@ def readGOPToDF(df, gop_file, method):
 def plot(df,outFile):
     methods = df['method'].unique()
     all_phonemes = df['phoneme'].unique()
-    fig, axs = plt.subplots(len(all_phonemes), len(methods), figsize=(20, 4*len(all_phonemes)))
+    fig, axs = plt.subplots(len(all_phonemes), len(methods), figsize=(20, 30*len(all_phonemes)))
     df["label"] = np.where(df['label']=='C', 0, 1 )
     for row,phoneme in enumerate(all_phonemes):
         for col,mtd in enumerate(methods):
