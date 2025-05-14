@@ -155,7 +155,7 @@ def mdd_mask( pid_seq, index, length, mask_ratio, device):
         sys.exit("mask_ratio must greater than 1") 
     extend = math.floor((r-l) * (mask_ratio - 1) / 2)
     l = l - extend if l - extend >= 0 else 0
-    r = r + extend if r + extend <= length-1 else length-1
+    r = r + extend if r + extend <= length else length
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
     return mask
 
@@ -190,7 +190,7 @@ def get_tts_results(model, text_in, prop_in, lang, is_ar, device, reps_in, predi
                 use_lora=True,
                 resps_list=[reps_in[:, :1]],
                 predict_level_0 = predict_level_0,
-                phoneme_mask=phoneme_mask,
+                phoneme_mask=[phoneme_mask],
                 n_step_level_0 = n_step_level_0,
             )
 

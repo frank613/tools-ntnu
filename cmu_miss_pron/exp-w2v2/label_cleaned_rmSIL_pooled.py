@@ -168,7 +168,7 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("this script takes 4 arguments <GOP file> <error-uttid-list>  <transcribed phoneme-seq file> <outJson>. It labels the phonemes in the GOP file and output a summary in json format, remove SIL or SPN from the GOP")
 
-    levels = 1
+    levels = 8
     utt_list = []
     with open(sys.argv[2]) as ifile:
             for line in ifile:
@@ -177,18 +177,23 @@ if __name__ == "__main__":
                 if len(fields) != 1:
                     sys.exit("wrong input line")
                 utt_list.append(fields[0])
+    print(os.path.dirname(sys.argv[4]))
+    os.makedirs(os.path.dirname(sys.argv[4]), exist_ok=True)
     for i in range(levels):
         json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], i, pooled=False)
-        #os.makedirs(os.path.dirname(sys.argv[4]), exist_ok=True)
-        #with open(sys.argv[4], "w") as f:
-        #    json.dump(json_dict, f)
-
         print(f'The avg AUC using code layer {i}: {avg_auc}')
-
+        with open(sys.argv[4]+f"level-{i}.json", "w") as f:
+            json.dump(json_dict, f)
         json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], i, pooled=True)
         print(f'The avg AUC using code layer {i}-pooled: {avg_auc}')
+        with open(sys.argv[4]+f"level-{i}-pooled.json", "w") as f:
+            json.dump(json_dict, f)
 
     json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], "mean", pooled=False)
     print(f'The avg AUC using code layer mean: {avg_auc}')
+    with open(sys.argv[4]+f"level-mean.json", "w") as f:
+        json.dump(json_dict, f)
     json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], "mean", pooled=True)
     print(f'The avg AUC using code layer mean-pooled: {avg_auc}')
+    with open(sys.argv[4]+f"level-mean-pooled.json", "w") as f:
+        json.dump(json_dict, f)

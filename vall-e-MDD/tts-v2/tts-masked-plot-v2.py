@@ -157,7 +157,7 @@ def mdd_mask( pid_seq, index, length, mask_ratio, device):
         sys.exit("mask_ratio must greater than 1") 
     extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
     l = l_orig - extend if l_orig - extend >= 0 else 0
-    r = r_orig + extend if r_orig + extend <= length-1 else length-1
+    r = r_orig + extend if r_orig + extend <= length else length
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
     return mask,l_orig,r_orig
 
@@ -246,7 +246,7 @@ def get_tts_logtis_and_plot(model, text_in, prop_in, lang, is_ar, device, reps_i
                 disable_tqdm=False,
                 use_lora=True,
                 resps_list=[reps_in],
-                phoneme_mask=phoneme_mask,
+                phoneme_mask=[phoneme_mask],
                 n_step_level_0 = 1,
             )
 

@@ -400,7 +400,7 @@ if __name__ == "__main__":
     ## default cfg and then update cfg from model, similar to inferece.py
     cfg.load_model(Path(sys.argv[1]))
     cfg.format( training=False )
-    #cfg.device = "cpu"
+    cfg.device = "cpu"
     ## cfg related attributes
     dtype = cfg.inference.dtype
     amp = cfg.inference.amp
@@ -413,7 +413,7 @@ if __name__ == "__main__":
     ctm_dict = read_ctm(sys.argv[4], p_tokenizer)
     uttid_list_ctm = list(ctm_dict.keys())
     dur_list = read_dur(sys.argv[6])
-    subset_list = [ uttid for uttid, dur in dur_list if dur <= 15 and uttid in uttid_list_ctm]
+    subset_list = [ uttid for uttid, dur in dur_list if dur > 15 and uttid in uttid_list_ctm]
     #pdb.set_trace()
     #assert len(subset_list)  == len(uttid_list_ctm) 
     csv_path = Path(sys.argv[2])
@@ -426,7 +426,7 @@ if __name__ == "__main__":
     ds= load_dataset_local_from_dict(csv_path, "speechocean762", trans_map, uttid_list_all, lang_code="en-us", subset=subset_list, last=last_utt)
     # ds could be loaded from disk, need to move the tensors to device 
     #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "model":model, "device":device, "out_path":out_path}, num_proc=2) 
-    ds.map(batch_process, fn_kwargs={"p_tokenizer":p_tokenizer, "device":device, "out_path":out_path}, batched=True, batch_size=100, num_proc=1)
+    ds.map(batch_process, fn_kwargs={"p_tokenizer":p_tokenizer, "device":device, "out_path":out_path}, batched=True, batch_size=1, num_proc=9)
     
     #pdb.set_trace()
     # iter=tqdm(ds.iter(batch_size=1), total = len(ds))

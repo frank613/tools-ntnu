@@ -4,3 +4,6 @@ python evaluate_gop_feats.py ./gops/all_gop.feats ./metadata.csv ./utt2dur_train
 
 python evaluate_gop_model_kaldi.py ./gop_kaldi_combined.scp ./metadata.csv ./utt2dur.train ./utt2dur.test
 python evaluate_gop_feats_kaldi.py ./feat_kaldi_combined.scp ./metadata.csv ./utt2dur.train ./utt2dur.test
+
+
+python evaluate_gop_model_valle.py ./gops/combined_diff_blank_nolex_align.gop ./metadata.csv ./utt2dur.train ./utt2dur.test

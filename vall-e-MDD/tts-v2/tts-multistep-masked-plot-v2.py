@@ -157,7 +157,7 @@ def mdd_mask( pid_seq, index, length, mask_ratio, device):
         sys.exit("mask_ratio must greater than 1") 
     extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
     l = l_orig - extend if l_orig - extend >= 0 else 0
-    r = r_orig + extend if r_orig + extend <= length-1 else length-1
+    r = r_orig + extend if r_orig + extend <= length else length
     mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
     return mask,l_orig,r_orig
 
@@ -179,7 +179,7 @@ def resol_conversion(pid_seq, rate_target):
 
 def compute_gop(out_prob, left, right):
     ## do a small sanity check here
-    assert out_prob.shape[0] >= right-left and out_prob[:left].sum() + out_prob[right:] == 0
+    assert out_prob.shape[0] >= right-left and out_prob[:left].sum() + out_prob[right:].sum() == 0
     return out_prob[left:right].log().mean()
     
     
@@ -241,7 +241,7 @@ def get_tts_logtis_and_plot(model, text_in, prop_in, lang, is_ar, device, reps_i
                 disable_tqdm=False,
                 use_lora=True,
                 resps_list=[reps_in],
-                phoneme_mask=phoneme_mask,
+                phoneme_mask=[phoneme_mask],
                 n_step_level_0 = 10,
             )
 
@@ -314,7 +314,7 @@ if __name__ == "__main__":
     
     #phns = None
     #phns = torch.tensor([1, 2], device=device)
-    #phns[3] = 4
+    phns[3] = 119
     #phns[4] = phns[4]
     #phns[4] = 4
     #phns[1] = 101
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     sym_list = [ f"{i}-{p}:{ipa_dict_inv[p]}" for i, p in enumerate(phns.tolist())]
     print(sym_list)
     ## TTS
-    mask_index = 3
+    mask_index = 2
     #number_steps_level_0 = 1
     mask_ratio = 1
     target_phoneme=p_tokenizer._convert_id_to_token(int(pid_seq[mask_index][0]))
