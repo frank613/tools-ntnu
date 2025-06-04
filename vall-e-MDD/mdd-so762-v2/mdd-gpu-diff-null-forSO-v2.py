@@ -375,7 +375,7 @@ def batch_process(batch, p_tokenizer, device, out_path=None):
             prompt = None
             resp = torch.tensor(batch["resp"][i], device=device, dtype=torch.int16)
             lang = torch.tensor(batch["lang"][i], device=device, dtype=torch.uint8)
-            gop_list, gop_diff_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, cfg_strength_gop=2.5, n_step_level_0=10, diff_symbol="null", masking_ratio=1.0)
+            gop_list, gop_diff_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, cfg_strength_gop=0, n_step_level_0=1, diff_symbol="null", masking_ratio=1.0)
             ## convert L*T list to T*L
             #avg_post_list = [list(x) for x in zip(*avg_post_list)]
             #pooled_list = [list(x) for x in zip(*pooled_list)]

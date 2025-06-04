@@ -11,6 +11,7 @@ from sklearn.metrics import confusion_matrix
 from collections import Counter
 import re
 import random
+from statistics import mean
 import kaldi_io
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?') # can be different for different models
@@ -114,7 +115,62 @@ def readGOP_feats(gop_file, p_table, diff=False):
                 field_sec = 3
             else:
                 field_sec = 2   
-            cur_score = [10&float(x) for x in fields[field_sec].split(',')]
+            cur_score = [float(x) for x in fields[field_sec].split(',')]
+        ####optional silence
+        if cur_phoneme != opt_SIL:
+            seq_score.append((cur_phoneme, cur_score))
+    return df_temp
+
+def readGOP(gop_file, p_table, level=0, diff=False):
+    in_file = open(gop_file, 'r')
+    isNewUtt = True
+    skip = False
+    seq_score = []
+    df_temp = {}
+    label_phoneme = []
+    for line in in_file:
+        line = line.strip()
+        fields = line.split(' ')
+        if isNewUtt:
+            if len(fields) != 1:
+                sys.exit("uttid must be the first line of each utterance")
+            uttid=fields[0]
+            skip = False
+            if uttid not in p_table:
+                skip = True
+            else:
+                label_phoneme = p_table[uttid][1]
+            isNewUtt = False
+            continue
+        if line == '':
+            if not skip:
+                ## length in the gop file must the same as len(anno)
+                #assert( len(label_phoneme) == len(seq_score))
+                if len(label_phoneme) != len(seq_score):
+                    # pdb.set_trace()
+                    # sys.exit()
+                    print(f"{uttid} has different number of labels than the alignment/GOP, skipped")
+                else:
+                    df_temp.update({uttid: [(p,g,l) for (p,g),l in zip(seq_score, label_phoneme)]})
+            seq_score = []
+            label_phoneme = []
+            isNewUtt = True
+            continue
+        if len(fields) != 4:
+            continue
+        cur_match = re_phone.match(fields[1])
+        if (cur_match):
+            cur_phoneme = cur_match.group(1)
+        else:
+            sys.exit("non legal phoneme found in the gop file")
+        if diff == True:
+            field_sec = 3
+        else:
+            field_sec = 2
+        if level != "mean":
+            cur_score = float(fields[field_sec].split(",")[level])
+        else:
+            cur_score =  mean([ float(item) for item in fields[field_sec].split(",")])
         ####optional silence
         if cur_phoneme != opt_SIL:
             seq_score.append((cur_phoneme, cur_score))
@@ -162,19 +218,47 @@ def merge_features(data_list_one, data_list_two, number_of_features=8, dummy=Fal
                 new_features.append((p,g+features_two[i][1][:number_of_features],l))
         df.update({uttid:new_features})
     return df
-            
+
+def merge_features_value(data_list_one, data_list_two, dummy=False):
+    df = {}
+    for uttid, features in data_list_one.items():
+        assert uttid in data_list_two.keys()
+        new_features = []
+        features_two = data_list_two[uttid]
+        for i,(p,g,l) in enumerate(features):
+            assert p == features_two[i][0]
+            if dummy:
+                new_features.append((p,g+[0],l))
+            else:
+                new_features.append((p,g+[features_two[i][1]],l))
+        df.update({uttid:new_features})
+    return df
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 6:
-        sys.exit("this script takes 5 arguments <GOP-feats file> <GOP-vallE> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a SVR model, predict the test set, outputs a summary ")
-    merge_feats = True
+        sys.exit("this script takes 5 arguments <GOP-feats file, Kaldi> <GOP-vallE> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a SVR model, predict the test set, outputs a summary ")
+    pure_kaldi = False
+    merge_feats = False
+    gop_feats = True
     #readfiles
     p_dict = read_anno(sys.argv[3])
     data_list_kaldi = readGOP_feats_kaldi(sys.argv[1], p_dict)
-    data_list_vallE = readGOP_feats(sys.argv[2], p_dict, diff="all")
-    if merge_feats:
-        data_list = merge_features(data_list_kaldi, data_list_kaldi, number_of_features=8, dummy=False)
+    if pure_kaldi:
+        data_list = data_list_kaldi
     else:
-        data_list = data_list_vallE
+        if gop_feats:
+            data_list_vallE = readGOP_feats(sys.argv[2], p_dict, diff=False)
+            if merge_feats:
+                data_list = merge_features(data_list_kaldi, data_list_vallE, number_of_features=16, dummy=False)
+            else:
+                data_list = data_list_vallE
+        else:
+            data_list_vallE = readGOP(sys.argv[2], p_dict, level=0, diff=False)
+            if not merge_feats:
+                sys.exit("wrong input")
+            else:
+                data_list = merge_features_value(data_list_kaldi, data_list_vallE, dummy=False)
     train_list = readList(sys.argv[4])
     test_list = readList(sys.argv[5])
     

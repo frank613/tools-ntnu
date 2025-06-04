@@ -8,7 +8,7 @@ import re
 import math
 import os
 import datasets
-from vall_e.utils import to_device, set_seed, clamp, wrapper as ml
+from vall_e.utils import to_device, set_seed, clamp
 from vall_e.config import cfg
 from vall_e.engines import load_engines
 from vall_e.data import get_phone_symmap, get_lang_symmap, tokenize, text_tokenize, sentence_split
@@ -22,8 +22,8 @@ import pdb
 _logger = logging.getLogger(__name__)
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-ds_data_path = '/home/xinweic/cached-data/vall-e-mdd/data'
-ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd/ds-cache"
+ds_data_path = '/home/xinweic/cached-data/vall-e-mdd-fixed-v1/data'
+ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd-fixed-v1/ds-cache"
 datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
 datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
@@ -41,20 +41,28 @@ re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
 torch.set_num_threads(1)
 
 ##copied from inference.py
+# def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
+#     # already a tensor, return it
+#     if isinstance( text, torch.Tensor ):
+#         return text
+#     # check if tokenizes without any unks (for example, if already phonemized text is passes)
+#     if precheck and "<unk>" in phn_symmap:
+#         tokens = tokenize( text )
+#         if phn_symmap["<unk>"] not in tokens:
+#             return torch.tensor( tokens )
+
+#     if not phonemize:
+#         return torch.tensor( text_tokenize( text ) )
+
+#     return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+
 def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
     # already a tensor, return it
     if isinstance( text, torch.Tensor ):
         return text
-    # check if tokenizes without any unks (for example, if already phonemized text is passes)
-    if precheck and "<unk>" in phn_symmap:
-        tokens = tokenize( text )
-        if phn_symmap["<unk>"] not in tokens:
-            return torch.tensor( tokens )
 
-    if not phonemize:
-        return torch.tensor( text_tokenize( text ) )
-
-    return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+    else:
+        return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
 
 ##copied from inference.py
 def encode_lang(language):
@@ -196,7 +204,7 @@ def resol_conversion(pid_seq, rate_target):
     return pid_seq_ret
  
 ### non-batch version
-def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=8, diff_symbol=None, masking_ratio_lv0=None):
+def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, cfg_strength_lv0=0, diff_symbol="null", mask_ratio_lv0=1, total_levels=8):
     pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second) ## 75 for current config
     ##kaldi will randomly cut 10ms/20ms(1 or 2 frames) in the number of MFCC features, so we extend the SIL(or other phonemes in the last) to match the number of codes  
     frame_diff = resp_in.shape[0] - pid_seq[-1][-1]
@@ -228,8 +236,8 @@ def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=F
                     is_masking_nar_level_0=True,
                     pid_seq = pid_seq,
                     total_levels = total_levels,
-                    cfg_strength_lv0 = None,
-                    mask_ratio_lv0 = masking_ratio_lv0,
+                    cfg_strength_lv0 = cfg_strength_lv0,
+                    mask_ratio_lv0 = mask_ratio_lv0,
                     diff_symbol = diff_symbol,
                 )
     else: ## single processing
@@ -360,7 +368,7 @@ def batch_process(batch, p_tokenizer, device, out_path=None):
             prompt = None
             resp = torch.tensor(batch["resp"][i], device=device, dtype=torch.int16)
             lang = torch.tensor(batch["lang"][i], device=device, dtype=torch.uint8)
-            avg_post_list, pooled_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, diff_symbol=4, masking_ratio_lv0=1)
+            avg_post_list, pooled_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, cfg_strength_lv0=0, diff_symbol="null", mask_ratio_lv0=1, total_levels=8)
             ## convert L*T list to T*L
             avg_post_list = [list(x) for x in zip(*avg_post_list)]
             pooled_list = [list(x) for x in zip(*pooled_list)]

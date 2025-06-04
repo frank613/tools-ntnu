@@ -132,72 +132,79 @@ def train_model_for_phone(gops, labels, p):
 
 if __name__ == "__main__":
     if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <GOP file-Kaldi-scp-format> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a polynomial regression model, predict the test set, outputs a summary ")
+        sys.exit("this script takes 4 arguments <GOP file usual format> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a polynomial regression model, predict the test set, outputs a summary ")
 
     #readfiles
     p_dict = read_anno(sys.argv[2])
-    data_list = readGOP(sys.argv[1], p_dict, level="mean", diff=False)
+    #data_list = readGOP(sys.argv[1], p_dict, level=7, diff=False)
     train_list = readList(sys.argv[3])
     test_list = readList(sys.argv[4])
     
-    gop_table=[]
-    for item in data_list:
-        if item[0] in train_list:
-            isTrain = True
-        elif item[0] in test_list:
-            isTrain = False
+    for i in range(1):
+        if i == 8:
+            level = "mean"
         else:
-            sys.exit("found uttid not in train nor test")
-        for itm in item[1]:
-            gop_table.append(list(itm) + [item[0], isTrain])
-    df = pd.DataFrame(gop_table, columns=('phoneme','score','label','uttid', "isTrain"))
-    p_set = df['phoneme'].unique()
-    if len(p_set) != 39:
-        sys.exit("phoneme number is not 39, check the files")
+            level = i 
+        data_list = readGOP(sys.argv[1], p_dict, level=level, diff=True)
+        gop_table=[]
+        for item in data_list:
+            if item[0] in train_list:
+                isTrain = True
+            elif item[0] in test_list:
+                isTrain = False
+            else:
+                sys.exit("found uttid not in train nor test")
+            for itm in item[1]:
+                gop_table.append(list(itm) + [item[0], isTrain])
+        df = pd.DataFrame(gop_table, columns=('phoneme','score','label','uttid', "isTrain"))
+        p_set = df['phoneme'].unique()
+        if len(p_set) != 39:
+            sys.exit("phoneme number is not 39, check the files")
 
-    ##training
-    train_data_of = {}
-    for p in p_set:
-        records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["score","label"]] 
-        n_array = records.to_numpy()
-        scores, labels = n_array[:,0], n_array[:,1].astype(int)
-        train_data_of.setdefault(p,(scores,labels))
+        ##training
+        train_data_of = {}
+        for p in p_set:
+            records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["score","label"]] 
+            n_array = records.to_numpy()
+            scores, labels = n_array[:,0], n_array[:,1].astype(int)
+            train_data_of.setdefault(p,(scores,labels))
 
-    model_of = {}
-    for p, (scores,labels) in train_data_of.items():
-        r_model = train_model_for_phone(scores,labels, p)
-        model_of.setdefault(p, r_model)
-    # Train polynomial regression
-    #with ProcessPoolExecutor(10) as ex:
-    #    futures = [(p,ex.submit(train_model_for_phone, scores,labels, p)) for p, (scores,labels) in train_data_of.items()] 
-    #    model_of = {p: future.result() for p, future in futures} 
+        model_of = {}
+        for p, (scores,labels) in train_data_of.items():
+            r_model = train_model_for_phone(scores,labels, p)
+            model_of.setdefault(p, r_model)
+        # Train polynomial regression
+        #with ProcessPoolExecutor(10) as ex:
+        #    futures = [(p,ex.submit(train_model_for_phone, scores,labels, p)) for p, (scores,labels) in train_data_of.items()] 
+        #    model_of = {p: future.result() for p, future in futures} 
 
-    # Evaluate
-    test_data_of = {}
-    for p in p_set:
-        records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["score","label"]]
-        n_array_eva = records_eva.to_numpy()
-        scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1].astype(int)
-        test_data_of.setdefault(p,(scores_eva,labels_eva))
-
-
-    all_results = np.empty((0,2))
-    for p,(gops_eva, ref) in test_data_of.items():
-        gops_eva = PolynomialFeatures(poly_order).fit_transform(gops_eva.reshape(-1,1))
-        model = model_of[p]
-        hyp = model.predict(gops_eva).reshape(-1)
-        #hyp = np.round(hyp)
-        hyp = round_score(hyp,1)
-        #print(np.unique(hyp, return_counts=True))
-        results = np.stack((ref, hyp), axis = 1)
-        all_results = np.concatenate((all_results,results))
+        # Evaluate
+        test_data_of = {}
+        for p in p_set:
+            records_eva = df.loc[(df["phoneme"] == p) & (df["isTrain"] == False), ["score","label"]]
+            n_array_eva = records_eva.to_numpy()
+            scores_eva, labels_eva = n_array_eva[:,0], n_array_eva[:,1].astype(int)
+            test_data_of.setdefault(p,(scores_eva,labels_eva))
 
 
-    # summary
-    print(f'MSE: {metrics.mean_squared_error(all_results[:,0], all_results[:,1]):.2f}')
-    print(f'Corr: {np.corrcoef(all_results[:,0], all_results[:,1])[0][1]:.2f}')
-    print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
-    print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+        all_results = np.empty((0,2))
+        for p,(gops_eva, ref) in test_data_of.items():
+            gops_eva = PolynomialFeatures(poly_order).fit_transform(gops_eva.reshape(-1,1))
+            model = model_of[p]
+            hyp = model.predict(gops_eva).reshape(-1)
+            #hyp = np.round(hyp)
+            hyp = round_score(hyp,1)
+            #print(np.unique(hyp, return_counts=True))
+            results = np.stack((ref, hyp), axis = 1)
+            all_results = np.concatenate((all_results,results))
+
+
+        # summary
+        print(f"Summary of level: {level}")
+        print(f'MSE: {metrics.mean_squared_error(all_results[:,0], all_results[:,1]):.2f}')
+        print(f'Corr: {np.corrcoef(all_results[:,0], all_results[:,1])[0][1]:.2f}')
+        print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+        print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
 
 
 

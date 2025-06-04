@@ -163,13 +163,13 @@ def merge_features(data_list_one, data_list_two, number_of_features=8, dummy=Fal
 if __name__ == "__main__":
     if len(sys.argv) != 6:
         sys.exit("this script takes 5 arguments <GOP-feats file> <GOP-vallE> <metadata.csv> <train-utt2dur-kaldiformat> <test-utt2dur-kaldiformat>. It labels the phonemes in the GOP file based on the annotation file, learns a SVR model, predict the test set, outputs a summary ")
-    merge_feats = True
+    merge_feats = False
     #readfiles
     p_dict = read_anno(sys.argv[3])
     data_list_kaldi = readGOP_feats_kaldi(sys.argv[1], p_dict)
     data_list_vallE = readGOP_feats(sys.argv[2], p_dict, merged=False)
     if merge_feats:
-        data_list = merge_features(data_list_kaldi, data_list_kaldi, number_of_features=8, dummy=False)
+        data_list = merge_features(data_list_kaldi, data_list_vallE, number_of_features=8, dummy=False)
     else:
         data_list = data_list_vallE
     train_list = readList(sys.argv[4])

@@ -8,7 +8,7 @@ import re
 import math
 import os
 import datasets
-from vall_e.utils import to_device, set_seed, clamp, wrapper as ml
+from vall_e.utils import to_device, set_seed, clamp
 from vall_e.config import cfg
 from vall_e.engines import load_engines
 from vall_e.data import get_phone_symmap, get_lang_symmap, tokenize, text_tokenize, sentence_split
@@ -22,8 +22,8 @@ import pdb
 _logger = logging.getLogger(__name__)
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-ds_data_path = '/home/xinweic/cached-data/vall-e-mdd/data'
-ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd/ds-cache"
+ds_data_path = '/home/xinweic/cached-data/vall-e-mdd-fixed-v1/data'
+ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd-fixed-v1/ds-cache"
 datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
 datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
@@ -41,20 +41,28 @@ re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
 torch.set_num_threads(1)
 
 ##copied from inference.py
+# def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
+#     # already a tensor, return it
+#     if isinstance( text, torch.Tensor ):
+#         return text
+#     # check if tokenizes without any unks (for example, if already phonemized text is passes)
+#     if precheck and "<unk>" in phn_symmap:
+#         tokens = tokenize( text )
+#         if phn_symmap["<unk>"] not in tokens:
+#             return torch.tensor( tokens )
+
+#     if not phonemize:
+#         return torch.tensor( text_tokenize( text ) )
+
+#     return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+
 def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
     # already a tensor, return it
     if isinstance( text, torch.Tensor ):
         return text
-    # check if tokenizes without any unks (for example, if already phonemized text is passes)
-    if precheck and "<unk>" in phn_symmap:
-        tokens = tokenize( text )
-        if phn_symmap["<unk>"] not in tokens:
-            return torch.tensor( tokens )
 
-    if not phonemize:
-        return torch.tensor( text_tokenize( text ) )
-
-    return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+    else:
+        return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
 
 ##copied from inference.py
 def encode_lang(language):
@@ -164,6 +172,40 @@ def read_trans(tran_path):
             tran_map.update({uttid: (' '.join(sent)).lower()})
     return tran_map
 
+##return a list of phoneme masks for each phoneme, before and after scaled by mask_ratio
+def mdd_mask( pid_seq, length, mask_ratio, device):
+    ##return the original index, not the extended
+    mask_list = []
+    mask_list_orig = []
+    for index in range(len(pid_seq)):
+        mask = torch.full((length,), False, dtype=torch.bool, device=device )
+        mask_orig = torch.full((length,), False, dtype=torch.bool, device=device )
+        pid, l_orig, r_orig = pid_seq[index]
+        if mask_ratio < 1:
+            sys.exit("mask_ratio must greater than 1") 
+        extend = math.floor((r_orig-l_orig) * (mask_ratio - 1) / 2)
+        l = l_orig - extend if l_orig - extend >= 0 else 0
+        r = r_orig + extend if r_orig + extend <= length else length
+        mask[l:r] = True ## 1 is masked! same as above, different from below, because later will we use "where" operation 
+        mask_orig[l_orig:r_orig] = True
+        mask_list.append(mask)
+        mask_list_orig.append(mask_orig)
+    return mask_list, mask_list_orig
+
+## Input is a list(n levels) of list(n phonemes) of probs(tensor of T)
+## Return gop_list, gop_diff_list, 2D-list NumP x Layer
+def compute_gop(out_probs, out_probs_diff, phoneme_mask_list):
+    lv = len(out_probs)
+    assert lv == len(out_probs_diff) and lv >= 1
+    np = len(out_probs[0])
+    gop_list = [ [phon_p[mask_p].log().mean().item() for phon_p, mask_p in zip(prob, phoneme_mask_list) ] for  prob in out_probs]
+    gop_list_diff = [[phon_p[mask_p].log().mean() for phon_p,mask_p in zip(prob, phoneme_mask_list) ] for prob in out_probs_diff ]
+    gop_list_diff = [ [ (phon_p - phon_p_diff).item() for phon_p, phon_p_diff in zip(gop, gop_diff)] for gop, gop_diff in zip(gop_list, gop_list_diff)]
+    ## take the transpose
+    gop_list = [list(x) for x in zip(*gop_list)]
+    gop_list_diff = [list(x) for x in zip(*gop_list_diff)]
+    return gop_list, gop_list_diff
+
 def read_dur(dur_path):
     dur_list = []
     with open(dur_path, "r") as ifile:
@@ -194,63 +236,48 @@ def resol_conversion(pid_seq, rate_target):
     return pid_seq_ret
  
 ### non-batch version
-def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, is_ar_level_0 = False, masking_nar_level_0 = True, total_levels=8, diff_symbol=None):
-    pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second) ## 75 for current config
+def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, total_levels=8, cfg_strength_gop=0, n_step_level_0=2, diff_symbol=4, masking_ratio=1):
+    pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second) ## 86.1 for current config
     ##kaldi will randomly cut 10ms/20ms(1 or 2 frames) in the number of MFCC features, so we extend the SIL(or other phonemes in the last) to match the number of codes  
     frame_diff = resp_in.shape[0] - pid_seq[-1][-1]
     if frame_diff > 5 or frame_diff < 0:
+        pdb.set_trace()
         sys.exit("problem with length of CTM and encodec output")
     #elif frame_diff > 0 and pid_seq[-1][0] == sil_token_id:
     elif frame_diff > 0:
         pid_seq[-1][-1] = pid_seq[-1][-1] + frame_diff   
     assert pid_seq[-1][-1] == resp_in.shape[0] 
     b_size = len(pid_seq)
-    if cmp_len:
-        pass
-        #lenth_in = resp_in.shape[0]
-        #len_list = [ lenth_in ] * b_size
-    else:
-        len_list = None
-    if masking_nar_level_0:
-        ## to batch for MDD
-        input_kwargs = dict(
-                    text_list=[text_in] * b_size, 
-                    task_list=["tts"] * b_size,
-                    raw_text_list=None,
-                    proms_list=[prop_in] * b_size,
-                    resps_list = [resp_in] * b_size,
-                    lang_list=[lang] * b_size,
-                    disable_tqdm=False,
-                    use_lora=True,
-                    is_mdd=True,
-                    is_masking_nar_level_0=True,
-                    pid_seq = pid_seq,
-                    total_levels = total_levels,
-                    cfg_strength_lv0 = None,
-                    mask_ratio_lv0 = 1,
-                    diff_symbol = "null",
-                )
-    else: ## single processing
-        sys.exit("for now, only support masking")
+    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, resp_in.shape[0], masking_ratio, device)
+    input_kwargs = dict(
+                text_list=[text_in] * b_size, 
+                task_list=["tts"] * b_size,
+                proms_list=[prop_in] * b_size,
+                resps_list = [resp_in] * b_size,
+                lang_list=[lang] * b_size,
+                disable_tqdm=False,
+                is_mdd=True,
+                total_levels = total_levels,
+                cfg_strength_lv0 = cfg_strength_gop,
+                phoneme_mask_list = phoneme_mask_list,
+                n_step_level_0 = n_step_level_0,
+                diff_symbol = diff_symbol,
+        )
+  
     if total_levels <= 0 or total_levels > model.config.resp_levels:
         sys.exit("specify a correct level range, usually from [1,8]")
     ##first level
-    if not is_ar_level_0: ## len+NAR
-        if not 'nar' in model.config.capabilities:
-            sys.exit("the model does not support NAR")
-        if cmp_len:
-            ## predict len
-            #kwargs = {"temperature": 2}
-            #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
-            sys.exit("not yet support to compare length")
+    
+    if cmp_len:
+        ## predict len
+        #kwargs = {"temperature": 2}
+        #len_list = model( **input_kwargs, task_list=["len"], **{"max_duration": 10, "temperature": 2} )
+        sys.exit("not yet support to compare length")
                
-        ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-        ret_value_1, ret_value_2 = model( **input_kwargs)
-    else:
-        sys.exit("not supporting AR+NAR in this version")
-    # pdb.set_trace()
-    # _logger.info(f"MDD done")
-    return ret_value_1, ret_value_2
+    ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
+    out_probs, out_probs_diff = model( **input_kwargs)
+    gop, gop_diff = compute_gop(out_probs, out_probs_diff, phoneme_mask_list_orig)
+    return gop, gop_diff
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, lang_code, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -354,17 +381,14 @@ def batch_process(batch, p_tokenizer, device, out_path=None):
             prompt = None
             resp = torch.tensor(batch["resp"][i], device=device, dtype=torch.int16)
             lang = torch.tensor(batch["lang"][i], device=device, dtype=torch.uint8)
-            avg_post_list, pooled_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8)
-            ## convert L*T list to T*L
-            avg_post_list = [list(x) for x in zip(*avg_post_list)]
-            pooled_list = [list(x) for x in zip(*pooled_list)]
-            assert len(pid_seq) == len(avg_post_list) and len(avg_post_list) == len(pooled_list)
+            gop_list, gop_diff_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, cfg_strength_gop=0, n_step_level_0=1, diff_symbol="null", masking_ratio=1)   
+            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')
-            for i, (avg_post, pooled_post) in enumerate(zip(avg_post_list,pooled_list)):
-                gop_avg = ",".join([ str(item) for item in avg_post])
-                gop_pool = ",".join([ str(item) for item in pooled_post])
-                f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid_seq[i][0])), gop_avg, gop_pool))
+            for i, (gop, gop_diff) in enumerate(zip(gop_list ,gop_diff_list)):
+                gop_str = ",".join([ str(item) for item in gop])
+                gop_diff_str = ",".join([ str(item) for item in gop_diff])
+                f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid_seq[i][0])), gop_str, gop_diff_str))
             f.write("\n")
     load_engines.cache_clear()
     unload_model()
@@ -379,6 +403,7 @@ if __name__ == "__main__":
     ## default cfg and then update cfg from model, similar to inferece.py
     cfg.load_model(Path(sys.argv[1]))
     cfg.format( training=False )
+    cfg.device = "cpu"
     #cfg.device = "cpu"
     ## cfg related attributes
     dtype = cfg.inference.dtype
@@ -405,7 +430,7 @@ if __name__ == "__main__":
     ctm_dict = read_ctm(sys.argv[4], p_tokenizer)
     uttid_list = list(ctm_dict.keys())
     dur_list = read_dur(sys.argv[6])
-    subset_list = [ uttid for uttid, dur in dur_list if dur < 12 ]
+    subset_list = [ uttid for uttid, dur in dur_list if dur >= 12 ]
     csv_path = Path(sys.argv[2])
     
     out_path = sys.argv[7]
@@ -416,7 +441,7 @@ if __name__ == "__main__":
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, lang_code="en-us", subset=subset_list, last=last_utt)
     # ds could be loaded from disk, need to move the tensors to device 
     #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "model":model, "device":device, "out_path":out_path}, num_proc=2) 
-    ds.map(batch_process, fn_kwargs={"p_tokenizer":p_tokenizer, "device":device, "out_path":out_path}, batched=True, batch_size=100, num_proc=1)
+    ds.map(batch_process, fn_kwargs={"p_tokenizer":p_tokenizer, "device":device, "out_path":out_path}, batched=True, batch_size=5, num_proc=30)
     
     #pdb.set_trace()
     # iter=tqdm(ds.iter(batch_size=1), total = len(ds))

@@ -12,6 +12,7 @@ import pdb
 import matplotlib.pyplot as plt
 import json
 import seaborn as sns
+from sklearn import metrics
 
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
@@ -19,60 +20,34 @@ re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 sil_tokens = set(["sil","SIL","SPN"])
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 
+def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
+    labels = array[:, 1]
+    if len(set(labels)) <= 1:
+        return "NoDef"
+    else:
+        #negative because GOP is negatively correlated to the probablity of making an error
+        rvalue = metrics.roc_auc_score(labels, -array[:, 0])
+        return round(rvalue,3)
+    
+    
 
 ## plot the error and correct for each phoneme   
 # df = pd.DataFrame(data_vec, columns=('uttid','context-len','token', "isFalse", "gop"))
-def plot_it(out_file, in_df):
+def compute_AUC(in_df):
     #token_list = sorted(in_df['token'].unique()[:5])
     context_list = sorted(in_df['context-len'].unique())
     ## change value -1 of full-context-len to the the x-axis value 
     full_context_x = len(context_list)
     in_df.loc[in_df['context-len'] == -1, "context-len"] = full_context_x
- 
-    #fig, axes = plt.subplots(len(token_list),1,figsize=(15*len(token_list), 70), sharex=True, sharey=True, layout="constrained")
-    #fig, axes = plt.subplots(1,1,figsize=(30, 30), sharex=True, sharey=True, layout="constrained")
-    fig, axes = plt.subplots(1,1, sharex=True, sharey=True, layout="constrained")
-    #plt.rcParams['font.size'] = 50
-    plt.xlabel('Context length')
-    plt.ylabel('GOP')
-    plt.xticks(context_list, [ i for i in context_list[:-1]] + ["full"])
-    all_df = in_df
-    g = sns.lineplot(data=all_df, x="context-len", y="gop", hue="isFalse", errorbar="sd", ax=axes)
-    g.legend(loc='center right', labels=['Correct', '_c1', 'Subsitution', '_s1']) 
-    g.set_aspect("auto")
-    g.set_title("The GOP-SD-AF value at different context length")
-        
+    
+    context_list_new = sorted(in_df['context-len'].unique())
 
-    # for i in range(len(token_list)):
-    #     axes_id = i    
-    #     all_df = in_df.loc[(in_df['token'] == token_list[i])]
-    #     g = sns.lineplot(data=all_df, x="context-len", y="gop", hue="isFalse", ax=axes[axes_id])
-    #     g.legend(loc='center right', labels=['Correct', '_c1', 'Subsitution', '_s1']) 
-    #     g.set_aspect("auto")
-    #     g.set_title("Phoneme " + token_list[i])
-        
-        # ### plot wides
-        # #pdb.set_trace()
-        # ### correct
-        # correct_df = in_df.loc[(in_df['token'] == token_list[i]) & (in_df['isFalse'] == 0)]  
-        # correct_wide = correct_df.pivot_table(index="context-len", columns="uttid", values="gop")
-        # correct_to_plot = correct_wide.iloc[:,:10]
-        # #correct_to_plot = correct_wide
-        # g = sns.lineplot(data=correct_to_plot, ax=axes[axes_id,1],  legend=False)
-        # g.set_aspect("auto")
-        # g.set_title("Phoneme " + token_list[i])
-        # ##
-        # #pdb.set_trace()
-        # wrong_df = in_df.loc[(in_df['token'] == token_list[i]) & (in_df['isFalse'] == 1)]  
-        # wrong_wide = wrong_df.pivot_table(index="context-len", columns="uttid", values="gop")
-        # #pdb.set_trace()
-        # wrong_to_plot = wrong_wide.iloc[:,:20]
-        # #wrong_to_plot = wrong_wide
-        # g = sns.lineplot(data=wrong_to_plot, ax=axes[axes_id,2], legend=False)
-        # g.set_aspect("auto")
-        # g.set_title("Phoneme " + token_list[i])
-        
-    fig.savefig(out_file)
+    for con_len in context_list_new:
+        to_auc = in_df.loc[in_df['context-len'] == con_len, ["gop","isFalse"]].to_numpy()
+        auc_value = auc_cal(to_auc)
+        print(f"AUC for context len {con_len} is {auc_value}")
+
+    print("done with the experiments")
     
     
 def full_context_stastics(in_df):
@@ -87,8 +62,8 @@ def full_context_stastics(in_df):
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) < 3:
-        sys.exit("this script takes 2 arguments") 
+    if len(sys.argv) < 2:
+        sys.exit("this script takes 1 argument") 
     norm = False
     ##read csv to df
     field_len = 5
@@ -122,7 +97,7 @@ if __name__ == "__main__":
 
     df_occ = pd.DataFrame(data_vec_occ, columns=('uttid','context-len','token', "isFalse", "gop"))
     full_context_stastics(df_occ)
-    plot_it(sys.argv[2], df_occ)
+    compute_AUC(df_occ)
 
    
        

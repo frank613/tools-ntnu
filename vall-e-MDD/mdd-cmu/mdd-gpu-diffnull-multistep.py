@@ -22,8 +22,8 @@ import pdb
 _logger = logging.getLogger(__name__)
 logging.basicConfig(encoding='utf-8', level=logging.INFO)
 
-ds_data_path = '/home/xinweic/cached-data/vall-e-mdd/data'
-ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd/ds-cache"
+ds_data_path = '/home/xinweic/cached-data/vall-e-mdd-fixed-v1/data'
+ds_cache_path = "/home/xinweic/cached-data/vall-e-mdd-fixed-v1/ds-cache"
 datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
 datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
@@ -41,20 +41,28 @@ re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
 torch.set_num_threads(1)
 
 ##copied from inference.py
+# def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
+#     # already a tensor, return it
+#     if isinstance( text, torch.Tensor ):
+#         return text
+#     # check if tokenizes without any unks (for example, if already phonemized text is passes)
+#     if precheck and "<unk>" in phn_symmap:
+#         tokens = tokenize( text )
+#         if phn_symmap["<unk>"] not in tokens:
+#             return torch.tensor( tokens )
+
+#     if not phonemize:
+#         return torch.tensor( text_tokenize( text ) )
+
+#     return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+
 def encode_text(text, phn_symmap, language="auto", precheck=True, phonemize=True ):
     # already a tensor, return it
     if isinstance( text, torch.Tensor ):
         return text
-    # check if tokenizes without any unks (for example, if already phonemized text is passes)
-    if precheck and "<unk>" in phn_symmap:
-        tokens = tokenize( text )
-        if phn_symmap["<unk>"] not in tokens:
-            return torch.tensor( tokens )
 
-    if not phonemize:
-        return torch.tensor( text_tokenize( text ) )
-
-    return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
+    else:
+        return torch.tensor( tokenize( g2p.encode(text, language=language) ) )
 
 ##copied from inference.py
 def encode_lang(language):
@@ -190,9 +198,9 @@ def compute_gop(out_probs, out_probs_diff, phoneme_mask_list):
     lv = len(out_probs)
     assert lv == len(out_probs_diff) and lv >= 1
     np = len(out_probs[0])
-    gop_list = [ [phon_p[mask_p].log().mean() for phon_p, mask_p in zip(prob,mask) ] for  prob, mask in zip(out_probs, phoneme_mask_list)]
-    gop_list_diff = [[phon_p[mask_p].log().mean() for phon_p,mask_p in zip(prob,mask) ] for prob, mask in zip(out_probs_diff, phoneme_mask_list)]
-    gop_list_diff = [ [ (phon_p - phon_p_diff).item for phon_p, phon_p_diff in zip(gop, gop_diff)] for gop, gop_diff in zip(gop_list, gop_list_diff)]
+    gop_list = [ [phon_p[mask_p].log().mean().item() for phon_p, mask_p in zip(prob, phoneme_mask_list) ] for  prob in out_probs]
+    gop_list_diff = [[phon_p[mask_p].log().mean() for phon_p,mask_p in zip(prob, phoneme_mask_list) ] for prob in out_probs_diff ]
+    gop_list_diff = [ [ (phon_p - phon_p_diff).item() for phon_p, phon_p_diff in zip(gop, gop_diff)] for gop, gop_diff in zip(gop_list, gop_list_diff)]
     ## take the transpose
     gop_list = [list(x) for x in zip(*gop_list)]
     gop_list_diff = [list(x) for x in zip(*gop_list_diff)]
@@ -228,7 +236,7 @@ def resol_conversion(pid_seq, rate_target):
     return pid_seq_ret
  
 ### non-batch version
-def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, total_levels=8, cfg_strength_gop=2.5, n_step_level_0=10, diff_symbol=None, masking_ratio=1):
+def get_avg_posterior(model, text_in, prop_in, resp_in, lang, pid_seq, cmp_len=False, total_levels=8, cfg_strength_gop=0, n_step_level_0=1, diff_symbol=None, masking_ratio=2):
     pid_seq = resol_conversion(pid_seq, rate_target=cfg.dataset.frames_per_second) ## 86.1 for current config
     ##kaldi will randomly cut 10ms/20ms(1 or 2 frames) in the number of MFCC features, so we extend the SIL(or other phonemes in the last) to match the number of codes  
     frame_diff = resp_in.shape[0] - pid_seq[-1][-1]
@@ -373,7 +381,7 @@ def batch_process(batch, p_tokenizer, device, out_path=None):
             prompt = None
             resp = torch.tensor(batch["resp"][i], device=device, dtype=torch.int16)
             lang = torch.tensor(batch["lang"][i], device=device, dtype=torch.uint8)
-            gop_list, gop_diff_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, cfg_strength_gop=0, n_step_level_0=10, diff_symbol="null", masking_ratio=1)       
+            gop_list, gop_diff_list = get_avg_posterior(model, phns, prompt, resp, lang, pid_seq, total_levels=8, cfg_strength_gop=0, n_step_level_0=2, diff_symbol="null", masking_ratio=2.0)   
             assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')

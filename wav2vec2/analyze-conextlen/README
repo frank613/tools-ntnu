@@ -3,3 +3,6 @@ python analyze_context_len.py ./transcriptions/cmu_ali.txt ../training/out-model
 python analyze_context_len_batch.py ./transcriptions/cmu.ctm ../training/out-models/ctc-large-full/checkpoint-8000/  ~/data/data-for-w2v2/cmu-kids/metadata.csv ../training/out-models/ctc-large-full/processor_config_gop/ ./transcriptions/cmu_error.txt ./output-cmu/analyze-context-len/test
 
 python plot_context_len_v2.py ./output-cmu/analyze-context-len/all.txt ./out-plot/analyze_ctx_sb.png
+
+python compute_auc_context_len_real.py ./output-cmu/ctc8-analyze-context-final/all.txt ~/tools-ntnu/wav2vec2/generate-gop/out-gops-cmu/ctc8-gv5/ctc8-gv5.json ~/tools-ntnu/cmu_miss_pron/exp-w2v2/uttid.temp ./transcriptions/label_mapped.txt
+
