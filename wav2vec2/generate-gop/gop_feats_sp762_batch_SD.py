@@ -150,7 +150,7 @@ if __name__ == "__main__":
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path)
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[4]}, num_proc=2) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[4]}, num_proc=50) 
     #cuda = torch.device('cuda:1')
 
 

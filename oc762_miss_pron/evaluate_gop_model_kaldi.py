@@ -114,6 +114,7 @@ def train_model_for_phone(gops, labels, p):
     labels = labels.reshape(-1, 1)
     gops = gops.reshape(-1, 1)
     gops = PolynomialFeatures(poly_order).fit_transform(gops)
+    ##comment out the next line will have huge imporvement 0.27->-0.40
     gops, labels = balanced_sampling(gops, labels)
     model.fit(gops, labels)
     return model

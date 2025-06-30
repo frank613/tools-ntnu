@@ -20,7 +20,7 @@ def round_score(score, floor=0.1, min_val=0, max_val=2):
     score = np.maximum(np.minimum(max_val, score), min_val)
     return np.round(score / floor) * floor
 
-def readGOP_OCC(gop_file, p_table):
+def readGOP(gop_file, p_table, mode="no-norm"):
     in_file = open(gop_file, 'r')
     isNewUtt = True
     skip = False
@@ -53,7 +53,7 @@ def readGOP_OCC(gop_file, p_table):
             label_phoneme = []
             isNewUtt = True
             continue
-        if len(fields) != 5:
+        if len(fields) != 6:
             continue
         cur_match = re_phone.match(fields[1])
         if (cur_match):
@@ -61,56 +61,34 @@ def readGOP_OCC(gop_file, p_table):
         else:
             sys.exit("non legal phoneme found in the gop file")
         cur_score = float(fields[2])
+        cur_occ = float(fields[3]) 
+        cur_occ_num = float(fields[4]) 
+        cur_occ_extra = float(fields[5]) 
+        
         ####optional silence
         if cur_phoneme != opt_SIL:
-            seq_score.append((cur_phoneme, cur_score))
-    return df_temp
-
-
-def readGOP(gop_file, p_table):
-    in_file = open(gop_file, 'r')
-    isNewUtt = True
-    skip = False
-    seq_score = []
-    df_temp = []
-    label_phoneme = []
-    for line in in_file:
-        line = line.strip()
-        fields = line.split(' ')
-        if isNewUtt:
-            if len(fields) != 1:
-                sys.exit("uttid must be the first line of each utterance")
-            uttid=fields[0]
-            skip = False
-            if uttid not in p_table:
-                skip = True
+            if mode == "round":
+                occ_new = max(1,np.round(cur_occ))
+            elif mode == "ceiling":
+                occ_new = max(1, np.ceil(cur_occ))
+            elif mode == "floor":
+                occ_new = max(1,np.floor(cur_occ))
+            elif mode == "no-norm":
+                occ_new = 1
+            elif mode == "direct":
+                occ_new = cur_occ
+            elif mode == "reduced":
+                occ_new = max(1.1,cur_occ)
+            elif mode == "max":
+                occ_new = max(1.3,cur_occ_extra,cur_occ)
+            elif mode == "mix":
+                if cur_occ < 0.1:
+                    occ_new = 1
+                else:
+                    occ_new = cur_occ
             else:
-                label_phoneme = p_table[uttid][1]
-            isNewUtt = False
-            continue
-        if line == '':
-            if not skip:
-                ## length in the gop file must the same as len(anno)
-                #assert( len(label_phoneme) == len(seq_score))
-                if len(label_phoneme) != len(seq_score):
-                    pdb.set_trace()
-                    sys.exit()
-                df_temp.append((uttid, [(p,g,l) for (p,g),l in zip(seq_score, label_phoneme)]))
-            seq_score = []
-            label_phoneme = []
-            isNewUtt = True
-            continue
-        if len(fields) != 3:
-            continue
-        cur_match = re_phone.match(fields[1])
-        if (cur_match):
-            cur_phoneme = cur_match.group(1)
-        else:
-            sys.exit("non legal phoneme found in the gop file")
-        cur_score = float(fields[2])
-        ####optional silence
-        if cur_phoneme != opt_SIL:
-            seq_score.append((cur_phoneme, cur_score))
+                occ_new = max(1,cur_occ)
+            seq_score.append((cur_phoneme, cur_score/occ_new))
     return df_temp
 
 def read_anno(anno_file):
@@ -159,8 +137,7 @@ if __name__ == "__main__":
 
     #readfiles
     p_dict = read_anno(sys.argv[2])
-    #data_list = readGOP(sys.argv[1], p_dict)
-    data_list = readGOP_OCC(sys.argv[1], p_dict)
+    data_list = readGOP(sys.argv[1], p_dict, mode="reduced")
     train_list = readList(sys.argv[3])
     test_list = readList(sys.argv[4])
     
@@ -180,11 +157,16 @@ if __name__ == "__main__":
         sys.exit("phoneme number is not 39, check the files")
 
     ##training
+    doFloor=True
     train_data_of = {}
     for p in p_set:
         records = df.loc[(df["phoneme"] == p) & (df["isTrain"] == True), ["score","label"]] 
         n_array = records.to_numpy()
-        scores, labels = n_array[:,0], n_array[:,1].astype(int)
+        scores = n_array[:,0]
+        if doFloor:
+            labels = n_array[:,1].astype(int)
+        else:
+            labels = np.round(n_array[:,1])
         train_data_of.setdefault(p,(scores,labels))
 
     model_of = {}
@@ -224,7 +206,8 @@ if __name__ == "__main__":
     res_tuple = res.confidence_interval(confidence_level=0.95)
     low, high = res_tuple.low, res_tuple.high
     print(f'Corr-v2: {res.statistic:.3f}, low={low:.3f}, high={high:.3f}')
-    print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+    #print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int)))
+    print(metrics.classification_report(all_results[:,0].astype(int), all_results[:,1].astype(int), digits=3))
     print(confusion_matrix(all_results[:,0].astype(int), all_results[:,1].astype(int)))
 
 

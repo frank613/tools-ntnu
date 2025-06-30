@@ -12,14 +12,16 @@ import torch
 from pathlib import Path
 import pdb
 
-datasets.config.DOWNLOADED_DATASETS_PATH = Path('/localhome/stipendiater/xinweic/wav2vec2/data/downloads')
-datasets.config.HF_DATASETS_CACHE= Path('/localhome/stipendiater/xinweic/wav2vec2/data/ds-cache')
+ds_data_path = '/home/xinweic/cached-data/wav2vec2/data'
+ds_cache_path = "/home/xinweic/cached-data/wav2vec2/ds-cache"
+datasets.config.DOWNLOADED_DATASETS_PATH = Path(ds_data_path)
+datasets.config.HF_DATASETS_CACHE= Path(ds_cache_path)
 
 re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
 
-#RE for Teflon files
+#RE for SO762
 re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
 

@@ -1,0 +1,5 @@
+python gop_af_sd_occ_disamb_fix.py ./transcriptions/cmu.ctm ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/checkpoint-8000/ data-new/data-for-w2v2/cmu-kids/metadata.csv ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/processor_config_gop/ None ./out-journal/gop_af_sd_occ_extra/gop
+
+python so762_gop_af_sd_occ_disamb_extra.py ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/checkpoint-8000/ ./data/local/speechocean762/all/ ~/tools-ntnu/wav2vec2/training/out-models/ctc-large-full/processor_config_gop/ None ./out-journal/SO762-gop_af_sd_occ_extra/gop
+
+

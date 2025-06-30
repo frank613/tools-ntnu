@@ -23,51 +23,23 @@ spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil", "SIL", "SPN"])
 PAD_SIL_TOKEN = "SIL"
 
-#RE for Teflon files
-re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
-
-#RE for CMU-kids
-re_uttid_raw = re.compile(r'(.*)\.(.*$)')
+#RE for SO762
+re_uttid = re.compile(r'(.*)\.(.*$)')
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
     
-#pad_sil_token on begin and end of the sequence if not None   
-def read_trans(trans_path, pad_sil_token=None):
-    trans_map = {}
-    cur_uttid = ""
-    with open(trans_path, "r") as ifile:
-        for line in ifile:
-            items = line.strip().split()
-            if len(items) != 5:
-                sys.exit("input trasncription file must be in the Kaldi CTM format")
-            if items[0] != cur_uttid and items[0] not in trans_map: 
-                if pad_sil_token: ##add SIL at the begining and end of the sequence 
-                    if cur_uttid != "":
-                        trans_map[cur_uttid].append(pad_sil_token)
-                    cur_uttid = items[0]
-                    trans_map[cur_uttid] = [pad_sil_token]
-                else:
-                    cur_uttid = items[0]
-                    trans_map[cur_uttid] = []
-                cur_uttid = items[0]
-            phoneme = re_phone.match(items[4]).group(1)                
-            if phoneme not in (sil_tokens | spec_tokens):
-                trans_map[cur_uttid].append(phoneme)
-    if pad_sil_token and trans_map[cur_uttid][-1] != pad_sil_token:
-        trans_map[cur_uttid].append(pad_sil_token)
-    return trans_map 
 
-def load_dataset_local_from_dict(csv_path, cache_additional):
+def load_dataset_local_from_dict(folder_path, cache_additional):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
     if not os.path.exists(cache_full_path):
-        datadict = {"audio": []}  
-        #with open(folder_path + '/metadata.csv') as csvfile:
-        with open(csv_path) as csvfile:
+        datadict = {"audio": [], "p_text":[]}
+        with open(folder_path + '/metadata.csv') as csvfile:
             next(csvfile)
             for row in csvfile:
-                #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
-                datadict["audio"].append(row.split(',')[0])
+                filename,trans,scores = row.split(',')
+                datadict["audio"].append(folder_path + '/' + filename)
+                datadict["p_text"].append(trans.split(' '))
         ds = datasets.Dataset.from_dict(datadict) 
         ds = ds.cast_column("audio", datasets.Audio(sampling_rate=16000))
         ds.save_to_disk(cache_full_path)
@@ -75,18 +47,11 @@ def load_dataset_local_from_dict(csv_path, cache_additional):
     #get the array for single row
     def map_to_array(batch):   
         batch["speech"] = [ item["array"] for item in batch["audio"] ]
-        batch["p_text"] = []
-        batch["id"] = [re_uttid_raw.match(item["path"])[1] for item in batch["audio"]]
-        for uid in batch["id"]:
-            if uid not in uttid_list:
-                batch["p_text"].append(None)
-            else:
-                batch["p_text"].append(tran_map[uid])
+        batch["id"] = [re_uttid.match(item["path"])[1] for item in batch["audio"]]
         return batch
-    ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=3)
-    #ds_filtered = ds_map.filter(lambda example: example['p_text'] is not None)
-
+    ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100, num_proc=5)
+    ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['p_text']], batched=True, batch_size=100, num_proc=5)
+    
     return ds_filtered
 
 ##return only likeli
@@ -130,8 +95,58 @@ def ctc_loss(params, seq, blank=0):
         alpha_bar[t] = torch.sum(alphas[:,t])
         alphas[:,t] = alphas[:,t] / alpha_bar[t]
     
-    llForward = torch.log(alpha_bar).sum()  	
-    return -llForward
+    llForward = torch.log(alpha_bar).sum()  
+    #occ_vec = alphas.sum(dim=1)
+    #genius
+    occ_vec = (alphas*alpha_bar[None,:]).sum(-1)  	
+    return (-llForward,occ_vec)	
+
+# ##return also alphas for the target position
+# def ctc_loss_plus(params, seq, pos, blank=0):
+#     """
+#     CTC loss function.
+#     params - n x m matrix of n-D probability distributions(softmax output) over m frames.
+#     seq - sequence of phone id's for given example.
+#     Returns objective, alphas and betas.
+#     """
+#     seqLen = seq.shape[0] # Length of label sequence (# phones)
+#     L = 2*seqLen + 1 # Length of label sequence with blanks
+#     T = params.shape[1] # Length of utterance (time)
+
+#     alphas = torch.zeros((L,T)).double()
+#     alpha_bar = torch.zeros(T).double()
+
+#     # Initialize alphas and forward pass 
+#     alphas[0,0] = params[blank,0]
+#     alphas[1,0] = params[seq[0],0]
+#     alpha_bar[0] = torch.sum(alphas[:,0])
+#     alphas[:,0] = alphas[:,0] /  alpha_bar[0]
+
+#     for t in range(1,T):
+#         start = max(0,L-2*(T-t)) 
+#         end = min(2*t+2,L)
+#         for s in range(start,L):
+#             l = int((s-1)/2)
+#             # blank
+#             if s%2 == 0:
+#                 if s==0:
+#                     alphas[s,t] = alphas[s,t-1] * params[blank,t]
+#                 else:
+#                     alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[blank,t]
+#             # same label twice
+#             elif s == 1 or seq[l] == seq[l-1]:
+#                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[seq[l],t]
+#             else:
+#                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
+#                     * params[seq[l],t]
+#         alpha_bar[t] = torch.sum(alphas[:,t])
+#         alphas[:,t] = alphas[:,t] / alpha_bar[t]
+    
+#     #occ = alphas[2*pos+1,:].sum()
+#     #genius
+#     occ = (alphas[2*pos+1,:]*alpha_bar).sum()  	
+#     llForward = torch.log(alpha_bar).sum()  	
+#     return (-llForward,occ)
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 #zero_pos is used for blocking the path
@@ -259,64 +274,75 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alpha_bar[t] = get_alpha_bar(alphas, t)
         alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
         
-    occ = alphas[2*pos+1,:,:].sum()
+    #occ = alphas[2*pos+1,:,:].sum()
+    #gernius
+    occ = (alphas[2*pos+1,:,:].sum(-1)*alpha_bar).sum() 
     llForward = torch.log(alpha_bar).sum()
     return (-llForward,occ)
 
-def single_process(example, p_tokenizer, processor, model, out_path):
-    row = example
+def single_process(batch, p_tokenizer, processor, model_path, out_path):
+    #row = example
     proc_id = str(os.getpid())
-    print("processing {0}".format(row['id']))
+    model = Wav2Vec2ForCTC.from_pretrained(model_path)
+    model.eval()
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
-        f.write(row['id']+'\n')
-        #get the total likelihood of the lable
-        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-        #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-        labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
-        labels = labels.type(torch.int32)
-        ##return the log_like to check the correctness of our function
-        return_dict = model(input_values, labels = labels)
-        logits = return_dict["logits"].squeeze(0) 
-        post_mat = logits.softmax(dim=-1).type(torch.float64)
-        ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-        #step 2, compute the GOP
-        pids = labels.tolist()
-        for i,pid in enumerate(pids):
-            ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-            gop = -ll_self + ll_denom
-            f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item(), occ.item()))
-        f.write("\n")
+        for i,uid in enumerate(batch["id"]): 
+            print("processing {0}".format(uid))
+            f.write(uid + '\n')
+            #get the total likelihood of the lable
+            input_values = processor(batch["speech"][i], return_tensors="pt", sampling_rate=16000).input_values
+            #the default loss here in the config file is "ctc_loss_reduction": "sum" 
+            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(batch["p_text"][i]))
+            labels = labels.type(torch.int32)
+            ##return the log_like to check the correctness of our function
+            return_dict = model(input_values, labels = labels)
+            logits = return_dict["logits"].squeeze(0) 
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
+            ll_self, occ_vec_orig = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+            #step 2, compute the GOP
+            pids = labels.tolist()
+            for i,pid in enumerate(pids):
+                occ_num = occ_vec_orig[2*i+1]
+                ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+                ## The missing extra path (the subsitution to the next pid) in the denominator
+                occ_extra = torch.zeros(1)
+                if i!= len(pids)-1:
+                    labels_extra = labels.clone()
+                    labels_extra[i] = pids[i+1]
+                    ll_extra,occ_vec_extra = ctc_loss(post_mat.transpose(0,1), labels_extra, blank=0)
+                    ll_denom = -((-ll_denom).exp() + (-ll_extra).exp()).log()
+                    if occ_vec_extra[2*(i+1)+1] < 0.1:
+                        #We need to use i+1 position for extra path because of deletion
+                        #Warning, we assume the next canonical phoneme is always correct, if not, then we could lose the occ for the target,
+                        #though not perfect but it is safe not to over-estimate the target occ count
+                        occ_extra = occ_vec_extra[2*(i+1)+1]
+                    else:
+                        ##not a deletion, we need to compute the occ for the target position
+                        occ_extra = occ_vec_extra[2*i+1]
+                gop = -ll_self + ll_denom
+                f.write("%d %s %s %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item(), occ.item(), occ_num.item(), occ_extra.item()))
+            f.write("\n")
 
         
 
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 7:
-        sys.exit("this script takes 6 arguments <transcription file, kaldi-CTM format> <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <SIL-token> <out-file>.\n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 5 arguments  <w2v2-model-dir> <local-data-csv-folder> <w2v2-preprocessor-dir> <SIL-token> <out-file>.\n \
         , it generates the GOP using a fine-tuned w2v2 CTC model, the csv path must be a folder containing audios files and the csv. SIL indicates the token used for pad the SIL at the BOS/EOS")  
     # load the pretrained model and data
-    tran_path = sys.argv[1]
-    model_path = sys.argv[2]
-    csv_path = sys.argv[3]
-    prep_path = sys.argv[4]
-    sil_token = sys.argv[5]
- 
-    #step 0, read the files
-    if sil_token == PAD_SIL_TOKEN:
-        tran_map = read_trans(tran_path, pad_sil_token=PAD_SIL_TOKEN) 
-    else:
-        tran_map = read_trans(tran_path) 
-    uttid_list = tran_map.keys()
- 
+    model_path = sys.argv[1]
+    csv_folder = sys.argv[2]
+    prep_path = sys.argv[3]
+    sil_token = sys.argv[4]
+
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
-    model = Wav2Vec2ForCTC.from_pretrained(model_path)
-    model.eval()
 
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[6]}, num_proc=10) 
+    ds= load_dataset_local_from_dict(csv_folder, "speechocean762")
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model_path":model_path, "out_path":sys.argv[5]}, batched=True, batch_size=50, num_proc=100) 
     
     print("done")
     

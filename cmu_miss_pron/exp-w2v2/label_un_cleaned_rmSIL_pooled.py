@@ -10,7 +10,8 @@ import json
 import os
 
 exclude_token = ["SIL","SPN", "sil"]
-exclude_token_tran = ["SIL","SPN", "sil", "+INHALE+", "+EXHALE+", "+RUSTLE", "+SMACK+", "+NOISE+"]
+#exclude_token_tran = ["SIL","SPN", "sil", "+INHALE+", "+EXHALE+", "+RUSTLE", "+SMACK+", "+NOISE+"]
+exclude_token_tran = ["SIL","SPN", "sil"]
 #exclude_token = ["SIL","SPN", "sil", "<pad>"]
 re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
 #re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*|<pad>')
@@ -23,7 +24,6 @@ re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
 def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
     labels = [ 0 if i == 'C' else 1  for i in array[:, 1]]
     if len(set(labels)) <= 1:
-        pdb.set_trace()
         return "NoDef"
     else:
         #negative because GOP is negatively correlated to the probablity of making an error
@@ -62,6 +62,7 @@ def labelError(GOP_file, error_list, tran_file, index, pooled=False):
 
         extended += [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(row['seq-score']) ]
     df = pd.concat([df, pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid'])])
+    #pdb.set_trace()
     #json
     #p:(auc_value, frequent_sub, mean, std, count_of_del, count_of_sub, total_count)
     out_form = { \

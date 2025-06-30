@@ -35,10 +35,10 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
 # df = pd.DataFrame(data_vec, columns=('uttid','context-len','token', "isFalse", "gop"))
 def compute_AUC(in_df):
     #token_list = sorted(in_df['token'].unique()[:5])
-    context_list = sorted(in_df['context-len'].unique())
+    #context_list = sorted(in_df['context-len'].unique())
     ## change value -1 of full-context-len to the the x-axis value 
-    full_context_x = len(context_list)
-    in_df.loc[in_df['context-len'] == -1, "context-len"] = full_context_x
+    #full_context_x = 2*(len(context_list) - 1)
+    #n_df.loc[in_df['context-len'] == -1, "context-len"] = full_context_x
     
     context_list_new = sorted(in_df['context-len'].unique())
 

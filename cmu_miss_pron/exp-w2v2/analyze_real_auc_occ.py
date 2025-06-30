@@ -30,7 +30,7 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
 
 
 def labelError(GOP_file, error_list, tran_file):
-    gop_df = readGOPToDF(GOP_file,weight=1,mode=None)
+    gop_df = readGOPToDF(GOP_file,weight=1,mode="max")
     tran_df = readTRANToDF(tran_file)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
     tran_list = tran_df['uttid'].unique()
@@ -130,20 +130,21 @@ def readGOPToDF(ark_file, weight=1, mode="no-norm"):
             isNewUtt = True
             seq_score = []
             continue
-        if len(fields) != 4:
+        if len(fields) != 6:
             continue
         cur_match = re_phone.match(fields[1])
         if (cur_match):
             cur_phoneme = cur_match.group(1)
         else:
             sys.exit("non legal phoneme found in the gop file")
-        cur_occ = float(fields[3]) 
+        cur_occ = float(fields[3])
+        occ_extra = float(fields[5])
+        #occ_extra = float(fields[4])
+        occ_num = float(fields[4]) 
         #cur_occ = 1
         cur_score = float(fields[2])
         if cur_phoneme not in exclude_token:
-            if not mode:
-                occ_new = max(1,cur_occ)*weight
-            elif mode == "round":
+            if mode == "round":
                 occ_new = max(1,np.round(cur_occ))*weight
             elif mode == "ceiling":
                 occ_new = max(1, np.ceil(cur_occ))*weight
@@ -151,8 +152,19 @@ def readGOPToDF(ark_file, weight=1, mode="no-norm"):
                 occ_new = max(1,np.floor(cur_occ))*weight
             elif mode == "no-norm":
                 occ_new = 1
+            elif mode == "direct":
+                occ_new = cur_occ
+            elif mode == "reduced":
+                occ_new = max(0.9, cur_occ)
+            elif mode == "mix":
+                if cur_occ < 0.9:
+                    occ_new = 1
+                else:
+                    occ_new = cur_occ
+            elif mode == "max":
+               occ_new = max(occ_extra, cur_occ, 1.3)
             else:
-                pass
+                occ_new = max(1,cur_occ)*weight
             seq_score.append((cur_phoneme, cur_score/occ_new))
     return df
 

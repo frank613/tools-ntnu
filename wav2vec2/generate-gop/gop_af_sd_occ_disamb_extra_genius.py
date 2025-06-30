@@ -130,8 +130,55 @@ def ctc_loss(params, seq, blank=0):
         alpha_bar[t] = torch.sum(alphas[:,t])
         alphas[:,t] = alphas[:,t] / alpha_bar[t]
     
-    llForward = torch.log(alpha_bar).sum()  	
-    return -llForward
+    llForward = torch.log(alpha_bar).sum()
+    #genius
+    occ_vec = (alphas*alpha_bar[None,:]).sum(-1)  	
+    return (-llForward,occ_vec)		 	
+
+# ##return also alphas for the target position
+# def ctc_loss_plus(params, seq, pos, blank=0):
+#     """
+#     CTC loss function.
+#     params - n x m matrix of n-D probability distributions(softmax output) over m frames.
+#     seq - sequence of phone id's for given example.
+#     Returns objective, alphas and betas.
+#     """
+#     seqLen = seq.shape[0] # Length of label sequence (# phones)
+#     L = 2*seqLen + 1 # Length of label sequence with blanks
+#     T = params.shape[1] # Length of utterance (time)
+
+#     alphas = torch.zeros((L,T)).double()
+#     alpha_bar = torch.zeros(T).double()
+
+#     # Initialize alphas and forward pass 
+#     alphas[0,0] = params[blank,0]
+#     alphas[1,0] = params[seq[0],0]
+#     alpha_bar[0] = torch.sum(alphas[:,0])
+#     alphas[:,0] = alphas[:,0] /  alpha_bar[0]
+
+#     for t in range(1,T):
+#         start = max(0,L-2*(T-t)) 
+#         end = min(2*t+2,L)
+#         for s in range(start,L):
+#             l = int((s-1)/2)
+#             # blank
+#             if s%2 == 0:
+#                 if s==0:
+#                     alphas[s,t] = alphas[s,t-1] * params[blank,t]
+#                 else:
+#                     alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[blank,t]
+#             # same label twice
+#             elif s == 1 or seq[l] == seq[l-1]:
+#                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1]) * params[seq[l],t]
+#             else:
+#                 alphas[s,t] = (alphas[s,t-1] + alphas[s-1,t-1] + alphas[s-2,t-1]) \
+#                     * params[seq[l],t]
+#         alpha_bar[t] = torch.sum(alphas[:,t])
+#         alphas[:,t] = alphas[:,t] / alpha_bar[t]
+    
+#     occ = alphas[2*pos+1,:].sum()
+#     llForward = torch.log(alpha_bar).sum()  	
+#     return (-llForward,occ)
 
 ##check if the last dim > 0, return the sum of last dimension (collect the posterior for each possible tokens),the zero_pos is excluded in the sum.
 #zero_pos is used for blocking the path
@@ -259,33 +306,54 @@ def ctc_loss_denom(params, seq, pos, blank=0):
         alpha_bar[t] = get_alpha_bar(alphas, t)
         alphas[:,t,:] = alphas[:,t,:] / alpha_bar[t]
         
-    occ = alphas[2*pos+1,:,:].sum()
+    #occ = alphas[2*pos+1,:,:].sum()
+    #gernius
+    occ = (alphas[2*pos+1,:,:].sum(-1)*alpha_bar).sum() 
     llForward = torch.log(alpha_bar).sum()
     return (-llForward,occ)
 
-def single_process(example, p_tokenizer, processor, model, out_path):
-    row = example
+def single_process(batch, p_tokenizer, processor, model_path, out_path):
+    #row = example
     proc_id = str(os.getpid())
-    print("processing {0}".format(row['id']))
+    model = Wav2Vec2ForCTC.from_pretrained(model_path)
+    model.eval()
     with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
-        f.write(row['id']+'\n')
-        #get the total likelihood of the lable
-        input_values = processor(row["speech"], return_tensors="pt", sampling_rate=16000).input_values
-        #the default loss here in the config file is "ctc_loss_reduction": "sum" 
-        labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[row["id"]]))
-        labels = labels.type(torch.int32)
-        ##return the log_like to check the correctness of our function
-        return_dict = model(input_values, labels = labels)
-        logits = return_dict["logits"].squeeze(0) 
-        post_mat = logits.softmax(dim=-1).type(torch.float64)
-        ll_self = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
-        #step 2, compute the GOP
-        pids = labels.tolist()
-        for i,pid in enumerate(pids):
-            ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
-            gop = -ll_self + ll_denom
-            f.write("%d %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item(), occ.item()))
-        f.write("\n")
+        for i,uid in enumerate(batch["id"]): 
+            print("processing {0}".format(uid))
+            f.write(uid + '\n')
+            #get the total likelihood of the lable
+            input_values = processor(batch["speech"][i], return_tensors="pt", sampling_rate=16000).input_values
+            #the default loss here in the config file is "ctc_loss_reduction": "sum" 
+            labels = torch.Tensor(p_tokenizer.convert_tokens_to_ids(tran_map[uid]))
+            labels = labels.type(torch.int32)
+            ##return the log_like to check the correctness of our function
+            return_dict = model(input_values, labels = labels)
+            logits = return_dict["logits"].squeeze(0) 
+            post_mat = logits.softmax(dim=-1).type(torch.float64)
+            ll_self, occ_vec = ctc_loss(post_mat.transpose(0,1), labels, blank=0)
+            #step 2, compute the GOP
+            pids = labels.tolist()
+            for i,pid in enumerate(pids):
+                ll_denom,occ = ctc_loss_denom(post_mat.transpose(0,1), labels, i, blank=0)
+                ## The missing extra path (the subsitution to the next pid) in the denominator
+                if i!= len(pids)-1:
+                    labels_extra = labels.clone()
+                    labels_extra[i] = pids[i+1]
+                    ll_extra, occ_vec_extra = ctc_loss(post_mat.transpose(0,1), labels_extra, blank=0)
+                    ll_denom = -((-ll_denom).exp() + (-ll_extra).exp()).log()
+                    if occ_vec_extra[2*(i+1)+1] < 0.1:
+                        #We need to use i+1 position for extra path because of deletion
+                        #Warning, we assume the next canonical phoneme is always correct, if not, then we could lose the occ for the target,
+                        #though not perfect but it is safe not to over-estimate the target occ count
+                        occ_extra = occ_vec_extra[2*(i+1)+1]
+                    else:
+                        ##not a deletion, we need to compute the occ for the target position
+                        occ_extra = occ_vec_extra[2*i+1]
+                else:
+                    occ_extra = torch.zeros(1)
+                gop = -ll_self + ll_denom
+                f.write("%d %s %s %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid)), gop.item(), occ.item(), occ_extra.item()))
+            f.write("\n")
 
         
 
@@ -311,12 +379,10 @@ if __name__ == "__main__":
  
     processor = Wav2Vec2Processor.from_pretrained(prep_path)
     p_tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(prep_path)
-    model = Wav2Vec2ForCTC.from_pretrained(model_path)
-    model.eval()
 
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids")
-    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model":model, "out_path":sys.argv[6]}, num_proc=10) 
+    ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "processor":processor, "model_path":model_path, "out_path":sys.argv[6]}, batched=True, batch_size=50, num_proc=50) 
     
     print("done")
     

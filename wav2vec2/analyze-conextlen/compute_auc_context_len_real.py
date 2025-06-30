@@ -37,12 +37,6 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
 ## plot the error and correct for each phoneme   
 # df = pd.DataFrame(data_vec, columns=('uttid','context-len','token', "isFalse", "gop"))
 def compute_AUC(in_df):
-    #token_list = sorted(in_df['token'].unique()[:5])
-    context_list = sorted(in_df['context-len'].unique())
-    ## change value -1 of full-context-len to the the x-axis value 
-    full_context_x = len(context_list)
-    in_df.loc[in_df['context-len'] == -1, "context-len"] = full_context_x
-    
     context_list_new = sorted(in_df['context-len'].unique())
 
     for con_len in context_list_new:
@@ -155,6 +149,7 @@ if __name__ == "__main__":
         extended += [ pair + (labels_resized[idx], uttid+"-"+str(idx)+"-"+pair[0]) for idx, pair in enumerate(row['seq-score']) ]
     df = pd.concat([df, pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid'])])
     
+    pdb.set_trace()
     ##read context-len-gop to df
     field_len = 5
     data_vec_occ = []
@@ -191,9 +186,6 @@ if __name__ == "__main__":
             else:
                 data_vec_occ.append((fields[0], context_len, token_to, isFalse, round(gop,5)))
                 
-            pdb.set_trace()
-
-    pdb.set_trace()
     df_occ = pd.DataFrame(data_vec_occ, columns=('uttid','context-len','token', "isFalse", "gop"))
     full_context_stastics(df_occ)
     compute_AUC(df_occ)

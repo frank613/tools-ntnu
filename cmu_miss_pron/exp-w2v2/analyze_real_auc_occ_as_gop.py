@@ -10,7 +10,6 @@ import json
 import os
 
 exclude_token = ["SIL","SPN", "sil"]
-exclude_token_tran = ["SIL","SPN", "sil", "+INHALE+", "+EXHALE+", "+RUSTLE", "+SMACK+", "+NOISE+"]
 #exclude_token = ["SIL","SPN", "sil", "<pad>"]
 re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
 #re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*|<pad>')
@@ -23,7 +22,6 @@ re_phone = re.compile(r'([A-Z]+)[0-9]*(_\w)*')
 def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
     labels = [ 0 if i == 'C' else 1  for i in array[:, 1]]
     if len(set(labels)) <= 1:
-        pdb.set_trace()
         return "NoDef"
     else:
         #negative because GOP is negatively correlated to the probablity of making an error
@@ -31,8 +29,8 @@ def auc_cal(array): #input is a nX2 array, with the columns "score", "label"
         return round(rvalue,3)
 
 
-def labelError(GOP_file, error_list, tran_file, index, pooled=False):
-    gop_df = readGOPToDF(GOP_file, index, pooled=pooled)
+def labelError(GOP_file, error_list, tran_file):
+    gop_df = readGOPToDF(GOP_file,weight=1,mode="max")
     tran_df = readTRANToDF(tran_file)
     df = pd.DataFrame(columns=('phonemes','scores','labels', 'uttid'))
     tran_list = tran_df['uttid'].unique()
@@ -62,6 +60,7 @@ def labelError(GOP_file, error_list, tran_file, index, pooled=False):
 
         extended += [ pair + (labels_resized[idx], uttid) for idx, pair in enumerate(row['seq-score']) ]
     df = pd.concat([df, pd.DataFrame(extended, columns=['phonemes','scores','labels', 'uttid'])])
+    #pdb.set_trace()
     #json
     #p:(auc_value, frequent_sub, mean, std, count_of_del, count_of_sub, total_count)
     out_form = { \
@@ -100,6 +99,7 @@ def labelError(GOP_file, error_list, tran_file, index, pooled=False):
         out_form["phonemes"][phoneme]=(auc_value, freq_sub, mean, std, num_del, num_sub, num_total)
         num_phonemes += 1
 
+    #pdb.set_trace()
     out_form["summary"]["average-mean"]=total_mean/num_phonemes
     out_form["summary"]["average-std"]=total_std/num_phonemes
     out_form["summary"]["average-AUC"]=total_auc/num_phonemes
@@ -111,7 +111,7 @@ def labelError(GOP_file, error_list, tran_file, index, pooled=False):
     
 
 
-def readGOPToDF(ark_file, index, pooled=False):
+def readGOPToDF(ark_file, weight=1, mode="no-norm"):
     in_file = open(ark_file, 'r')
     df = pd.DataFrame(columns=('uttid', 'seq-score'))
     isNewUtt = True
@@ -130,27 +130,20 @@ def readGOPToDF(ark_file, index, pooled=False):
             isNewUtt = True
             seq_score = []
             continue
-        if len(fields) != 4:
+        if len(fields) != 6:
             continue
         cur_match = re_phone.match(fields[1])
         if (cur_match):
             cur_phoneme = cur_match.group(1)
         else:
             sys.exit("non legal phoneme found in the gop file")
-        if pooled:
-            fi=3
-        else:
-            fi=2
-        cur_score_list = fields[fi].split(",")
-        if len(cur_score_list) > 8 :
-            sys.exit("gop must have less than 8 numbers")
-        if cur_phoneme not in exclude_token:
-            if index != "mean":
-                seq_score.append((cur_phoneme, float(cur_score_list[index]))) 
-            else:
-                gop_list = [ float(x) for x in cur_score_list]
-                seq_score.append((cur_phoneme, np.mean(gop_list)))
-                #seq_score.append((cur_phoneme, np.mean(np.log((gop_list)))))
+        occ_denom = float(fields[3])
+        occ_extra = float(fields[4])
+        occ_num = float(fields[5]) 
+        #cur_occ = 1
+        #cur_score = float(fields[2])
+        cur_score = occ_num/max(occ_denom,occ_extra)
+        seq_score.append((cur_phoneme, cur_score))
     return df
 
 def readTRANToDF(tran_file):
@@ -158,8 +151,7 @@ def readTRANToDF(tran_file):
     df = pd.DataFrame(columns=('uttid', 'seq'))
     for line in in_file:
         uttid,seq = line.split()
-        seq_filtered = [ item for item in seq.split(';') if item not in exclude_token_tran]
-        df.loc[len(df.index)] = [uttid, seq_filtered]
+        df.loc[len(df.index)] = [uttid, seq.split(';')]
     return df
 
 
@@ -168,7 +160,6 @@ if __name__ == "__main__":
     if len(sys.argv) != 5:
         sys.exit("this script takes 4 arguments <GOP file> <error-uttid-list>  <transcribed phoneme-seq file> <outJson>. It labels the phonemes in the GOP file and output a summary in json format, remove SIL or SPN from the GOP")
 
-    levels = 8
     utt_list = []
     with open(sys.argv[2]) as ifile:
             for line in ifile:
@@ -177,23 +168,10 @@ if __name__ == "__main__":
                 if len(fields) != 1:
                     sys.exit("wrong input line")
                 utt_list.append(fields[0])
-    print(os.path.dirname(sys.argv[4]))
+    json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3])
     os.makedirs(os.path.dirname(sys.argv[4]), exist_ok=True)
-    for i in range(levels):
-        json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], i, pooled=False)
-        print(f'The avg AUC using code layer {i}: {avg_auc}')
-        with open(sys.argv[4]+f"level-{i}.json", "w") as f:
-            json.dump(json_dict, f)
-        json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], i, pooled=True)
-        print(f'The avg AUC using code layer {i}-pooled: {avg_auc}')
-        with open(sys.argv[4]+f"level-{i}-pooled.json", "w") as f:
-            json.dump(json_dict, f)
+    with open(sys.argv[4], "w") as f:
+        json.dump(json_dict, f)
 
-    json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], "mean", pooled=False)
-    print(f'The avg AUC using code layer mean: {avg_auc}')
-    with open(sys.argv[4]+f"level-mean.json", "w") as f:
-        json.dump(json_dict, f)
-    json_dict, avg_auc = labelError(sys.argv[1], utt_list, sys.argv[3], "mean", pooled=True)
-    print(f'The avg AUC using code layer mean-pooled: {avg_auc}')
-    with open(sys.argv[4]+f"level-mean-pooled.json", "w") as f:
-        json.dump(json_dict, f)
+    print(f'The avg AUC: {avg_auc}')
+
