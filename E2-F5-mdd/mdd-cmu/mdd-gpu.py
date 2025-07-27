@@ -124,14 +124,13 @@ def mdd_mask( pid_seq, mask_ratio, device):
         mask_list_orig.append(mask_orig)
     return mask_list, mask_list_orig
 
-##return gop_list, gop_diff_list, 2D-list NumP x Layer
+##return gop_list, gop_diff_list, 1D-list NumP 
 def compute_gop(out_probs, out_probs_diff, phoneme_mask_list):
-    lv = out_probs[0].shape[-1]
-    np = len(out_probs)
-    gop_list = [ prob[mask[:,None].expand(-1,lv)].view(-1,lv).log().mean(dim=0) if (prob[mask[:,None].expand(-1,lv)] == 0).sum() == 0 else sys.exit(f"not valid output {i}") for i, prob, mask in zip(range(np), out_probs, phoneme_mask_list)]
-    gop_list_diff = [ prob[mask[:,None].expand(-1,lv)].view(-1,lv).log().mean(dim=0) if (prob[mask[:,None].expand(-1,lv)] == 0).sum() == 0 else sys.exit(f"not valid output diff {i}") for i, prob, mask in zip(range(np), out_probs_diff, phoneme_mask_list)]
-    gop_list_diff = [ (gop - gop_diff).tolist() for gop, gop_diff in zip(gop_list, gop_list_diff)]
-    gop_list = [ item.tolist() for item in gop_list]
+    assert len(out_probs.shape) == 2 ## 2D tensor, B x NumFrame
+    np = out_probs.shape[0]
+    gop_list = [ out_probs[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
+    gop_list_diff = [ out_probs_diff[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
+    gop_list_diff = [ gop - gop_diff for gop, gop_diff in zip(gop_list, gop_list_diff)]
     return gop_list, gop_list_diff
 
 def read_dur(dur_path):
@@ -164,29 +163,30 @@ def resol_conversion_duration(pid_seq, dur_target):
     
  
 ### non-batch version
-def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop, diff_symbol=None, masking_ratio=1):
+def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio=1, sway_sampling_coef=-1, steps=32):
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel) 
     b_size = len(pid_seq)
     phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
     input_kwargs = dict(
-                tokens_list=[text_in] * b_size, 
-                cond_list=[cond] * b_size,
-                disable_tqdm=False,
-                cfg_strength_gop = cfg_strength_gop,
+                mel_target=[cond] * b_size,
+                text=[text_in] * b_size, 
+                duration = duration_mel,
+                steps = steps,
+                cfg_strength = cfg_strength_gop,
                 phoneme_mask_list = phoneme_mask_list,
                 diff_symbol = diff_symbol,
+                sway_sampling_coef = sway_sampling_coef,             
         )
                  
     ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-    out_probs, out_probs_diff = model.compute_prob( **input_kwargs)
-    gop, gop_diff = compute_gop(out_probs, out_probs_diff, phoneme_mask_list_orig)
+    log_prob_y0, log_prob_y0_null = model.compute_prob( **input_kwargs)
+    gop, gop_diff = compute_gop(log_prob_y0, log_prob_y0_null, phoneme_mask_list_orig)
     return gop, gop_diff
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
-    lang_code = lang_code
     if not os.path.exists(cache_full_path):
         ###Mel generator
         mel_spec_kwargs=dict(
@@ -196,7 +196,7 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
             n_mel_channels=n_mel_channels,
             target_sample_rate=target_sample_rate,
             mel_spec_type=mel_spec_type,
-        ),
+        )
         mel_spec = MelSpec(**mel_spec_kwargs)
         datadict = {"audio": []}  
         #with open(folder_path + '/metadata.csv') as csvfile:
@@ -206,11 +206,10 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
                 #datadict["audio"].append(folder_path + '/' + row.split(',')[0])
                 datadict["audio"].append(row.split(',')[0])
         ds = datasets.Dataset.from_dict(datadict) 
-        ds = ds.cast_column("audio", datasets.Audio(sampling_rate=24000))
+        #ds = ds.cast_column("audio", datasets.Audio(sampling_rate=target_sample_rate))
         ## do further transformation 
         def map_to_array(batch):   
-            batch["speech"] = [ item["array"] for item in batch["audio"] ]
-            batch["id"] = [re_uttid_raw.match(item["path"])[2] for item in batch["audio"]]
+            batch["id"] = [re_uttid_raw.match(item)[2] for item in batch["audio"]]
             batch["tokens"] = []
             batch["mel"] = []
             for i, uid in enumerate(batch["id"]):
@@ -225,17 +224,16 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
                     else:
                         final_text_list = [text_in]
                     batch["tokens"].append(final_text_list[0])
-                    audio_in_path = batch["audio"][i]["path"]
+                    audio_in_path = batch["audio"][i]
                     cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
-                    pdb.set_trace()
                     assert cond.ndim == 2
                     cond = mel_spec(cond)
-                    cond = cond.permute(0, 2, 1)
+                    cond = cond.permute(0, 2, 1).squeeze()
                     #duration_mel = math.ceil(cond.shape[-1] / hop_length)
                     batch["mel"].append(cond)
             return batch
         ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
-        ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['phns']], batched=True, batch_size=100, num_proc=10)
+        ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['tokens']], batched=True, batch_size=100, num_proc=10)
         ds_filtered.save_to_disk(cache_full_path)
         
     ds_filtered = datasets.Dataset.load_from_disk(cache_full_path)
@@ -280,16 +278,21 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
 #         f.write("\n")
 
 def batch_process(batch, device, out_path=None):
-    model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=vocoder_name, vocab_file=vocab_path, device=device, use_ema=True)
-    dtype = model.parameters().dtype
+    model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
+    dtype = next(model.parameters()).dtype
     ##mdd parameters:
-    cfg_strength_gop=2.5, 
-    diff_symbol=" ", 
+    cfg_strength_gop=0
+    #diff_symbol=" "
+    diff_symbol=None
     masking_ratio=1
+    steps=4
+    sway_sampling_coef = None
+    #sway_sampling_coef = -1
+    
     #We need training mode because ODE?
     #model.eval()
     proc_id = str(os.getpid())
-    with torch.no_grad(), open(out_path+"_"+proc_id+".txt", "a") as f:
+    with torch.no_grad(), open(out_path+"_"+proc_id+".gop", "a") as f:
         for i,uid in enumerate(batch["id"]):
             # if uid != "fadf1an2":
             #     continue
@@ -297,14 +300,12 @@ def batch_process(batch, device, out_path=None):
             pid_seq = ctm_dict[uid]
             tokens = batch["tokens"][i]
             mel = torch.tensor(batch["mel"][i], device=device, dtype=dtype)
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio)       
+            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps)       
             assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')
             for i, (gop, gop_diff) in enumerate(zip(gop_list ,gop_diff_list)):
-                gop_str = ",".join([ str(item) for item in gop])
-                gop_diff_str = ",".join([ str(item) for item in gop_diff])
-                f.write("%d %s %s %s\n"%(i, pid_seq[i][0], gop_str, gop_diff_str))
+                f.write("%d %s %s %s\n"%(i, pid_seq[i][0], gop, gop_diff))
             f.write("\n")
     
 if __name__ == "__main__":
@@ -323,8 +324,8 @@ if __name__ == "__main__":
     target_sample_rate = model_cfg.model.mel_spec.target_sample_rate
     hop_length = model_cfg.model.mel_spec.hop_length
     win_length = model_cfg.model.mel_spec.win_length
-    n_fft = model_cfg.model.mel_spec.win_length.n_fft
-    n_mel_channels = model_cfg.model.mel_spec.win_length.n_mel_channels
+    n_fft = model_cfg.model.mel_spec.n_fft
+    n_mel_channels = model_cfg.model.mel_spec.n_mel_channels
     frames_per_second = target_sample_rate // hop_length
     mask_ratio = 1
     
@@ -342,11 +343,11 @@ if __name__ == "__main__":
     model_name = model_cfg.model.name
     print(f"Using {model_name}...")
     #load vocoder
-    vocoder_local_path = vocoder_cache_path_model
-    if os.path.exists(vocoder_local_path):
-        vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=True, local_path=vocoder_local_path, device=device)
-    else:
-        vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=False, hf_cache_dir=vocoder_local_path, device=device)
+    # vocoder_local_path = vocoder_cache_path_model
+    # if os.path.exists(vocoder_local_path):
+    #     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=True, local_path=vocoder_local_path, device=device)
+    # else:
+    #     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=False, hf_cache_dir=vocoder_local_path, device=device)
              
     ##load alignment and transcription
     trans_map = read_trans(sys.argv[4])
@@ -354,15 +355,18 @@ if __name__ == "__main__":
     uttid_list = list(ctm_dict.keys())
     dur_list = read_dur(sys.argv[6])
     subset_list = [ uttid for uttid, dur in dur_list if dur < 10 ]
-    csv_path = Path(sys.argv[2])
+    csv_path = Path(sys.argv[3])
     
     out_path = sys.argv[7]
     #last_utt = "mjsd3ac2"
     last_utt = None
     
+    new_folder = os.path.dirname(out_path)
+    if not os.path.exists(new_folder):
+        os.makedirs(new_folder)
     # load dataset and read soundfiles
     ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, subset=subset_list, last=last_utt)
     # ds could be loaded from disk, need to move the tensors to device 
     #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "model":model, "device":device, "out_path":out_path}, num_proc=2) 
-    ds.map(batch_process, fn_kwargs={"device":device, "out_path":out_path}, batched=True, batch_size=1, num_proc=1)
+    ds.map(batch_process, fn_kwargs={"device":device, "out_path":out_path}, batched=True, batch_size=50, num_proc=1)
     

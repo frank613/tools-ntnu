@@ -145,8 +145,10 @@ if __name__ == "__main__":
     target_sample_rate = model_cfg.model.mel_spec.target_sample_rate
     hop_length = model_cfg.model.mel_spec.hop_length
     frames_per_second = target_sample_rate // hop_length
+    mask_ratio = 2
     seed = None
-    filling = True
+    filling = False
+    null_cond = False
     
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
@@ -190,6 +192,20 @@ if __name__ == "__main__":
         sys.exit("can't find the uid in data")
     target_text = trans_map[uid]
     text_list = [target_text]
+    
+    ## mask and gen
+    audio_in_path = Path(sys.argv[3])
+    cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
+    duration_mel = math.ceil(cond.shape[-1] / hop_length)
+    pid_seq_sec = ctm_dict[uid]
+    pid_seq = resol_conversion_duration(pid_seq_sec, dur_target=duration_mel)
+   
+    ###Null Condition
+    ###Warning, single " " == <SPACE><PAD>....!= all <SPACE>, check class TextEmbedding
+    if null_cond:
+        text_list = [ " " for text in text_list ]
+    
+    #tokenizer
     if tokenizer == "pinyin":
         final_text_list = convert_char_to_pinyin(text_list)
     else:
@@ -202,26 +218,16 @@ if __name__ == "__main__":
         
     print(f"text  : {text_list}")
     print(f"pinyin: {final_text_list}")
-    
-    ## mask and gen
-    audio_in_path = Path(sys.argv[3])
-    cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
-    duration_mel = math.ceil(cond.shape[-1] / hop_length)
-    pid_seq_sec = ctm_dict[uid]
-    pid_seq = resol_conversion_duration(pid_seq_sec, dur_target=duration_mel)
-   
-    ###Null Condition
-    #prompt=None    
+
     ## TTS, "cond" is in sampling_rate while mask is in frame_rate   
-    mask_ratio = 1
     repeats = 1
     for i, (pid, l_orig, r_orig) in enumerate(pid_seq):
         if mask_ratio < 1:
             sys.exit("mask_ratio must greater than 1") 
         extend = (r_orig-l_orig) * (mask_ratio - 1) / 2
         l = math.floor(l_orig - extend) if l_orig - extend >= 0 else 0
-        r = math.ceil(r_orig + extend) if r_orig + extend <= len(cond)-1 else len(cond)-1
-
+        r = math.ceil(r_orig + extend) if r_orig + extend <= duration_mel else duration_mel
+        
         cond_mask = torch.ones(duration_mel,  dtype=torch.bool, device=device)
         cond_mask[l:r] = False
         
@@ -252,6 +258,6 @@ if __name__ == "__main__":
             generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
         ##save
         os.makedirs(sys.argv[6], exist_ok=True)
-        save_spectrogram(gen_mel_spec[0].cpu().numpy(), f"{sys.argv[6]}/speech_edit_{pid}.png")
-        torchaudio.save(f"{sys.argv[6]}/speech_edit_{pid}.wav", generated_wave, target_sample_rate)
+        #save_spectrogram(gen_mel_spec[0].cpu().numpy(), f"{sys.argv[6]}/speech_edit_{pid}.png")
+        torchaudio.save(f"{sys.argv[6]}/speech_edit_{i}_{pid}.wav", generated_wave, target_sample_rate)
         print(f"Generated wav_{pid}: {generated_wave.shape}")

@@ -156,7 +156,10 @@ if __name__ == "__main__":
             ref_mel_len = 0
             final_mel_len = target_mel_len
         elif no_text: ## with audio, no extra text = nothing to generate? will be padded zeros until seq_len
-            text_list = [ref_text]
+            ##fully no text
+            text_list = [ " " for text in text_list ]
+            #only text corresponding to prompt
+            #text_list = [ref_text]
         else: ## no cond and no text
             text_list = [ " " for text in text_list ] 
             #copied from InputEmbedding.forward()
