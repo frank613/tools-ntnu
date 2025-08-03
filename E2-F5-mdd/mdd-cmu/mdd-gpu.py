@@ -53,6 +53,9 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
+max_batch = 20
+t_inerval = 16
+
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
@@ -167,21 +170,38 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel) 
-    b_size = len(pid_seq)
     phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
-    input_kwargs = dict(
-                mel_target=[cond] * b_size,
-                text=[text_in] * b_size, 
-                duration = duration_mel,
-                steps = steps,
-                cfg_strength = cfg_strength_gop,
-                phoneme_mask_list = phoneme_mask_list,
-                diff_symbol = diff_symbol,
-                sway_sampling_coef = sway_sampling_coef,             
-        )
-                 
-    ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-    log_prob_y0, log_prob_y0_null = model.compute_prob( **input_kwargs)
+    num_phonemes = len(pid_seq)
+    quo, res = num_phonemes // max_batch, num_phonemes % max_batch
+    if res <= 0.5 * max_batch:
+        iter_num = quo if quo > 0 else 1
+    else:
+        iter_num = quo + 1
+        
+    count = 0
+    log_prob_y0 = torch.rand((0), device=device)
+    log_prob_y0_null = torch.rand((0), device=device)
+    for i in range(iter_num):
+        b_size = max_batch if i != iter_num-1 else num_phonemes-count
+        phoneme_mask_in = phoneme_mask_list[count:count+b_size]
+        input_kwargs = dict(
+                    mel_target=[cond] * b_size,
+                    text=[text_in] * b_size, 
+                    duration = duration_mel,
+                    steps = steps,
+                    cfg_strength = cfg_strength_gop,
+                    phoneme_mask_list = phoneme_mask_in,
+                    diff_symbol = diff_symbol,
+                    sway_sampling_coef = sway_sampling_coef,
+                    t_inerval = t_inerval,             
+            )
+        ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
+        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_prob( **input_kwargs)
+        pdb.set_trace()
+        log_prob_y0 = torch.concat((log_prob_y0,log_prob_y0_temp))
+        log_prob_y0_null = torch.concat((log_prob_y0_null,log_prob_y0_null_temp))
+        #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
+        count += b_size           
     gop, gop_diff = compute_gop(log_prob_y0, log_prob_y0_null, phoneme_mask_list_orig)
     return gop, gop_diff
     
@@ -247,7 +267,7 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
                 break
         if last_index == -1:
             sys.exit("last not found, check input")
-        ds_filtered = ds_filtered.select(range(last_index+1, len(ds_filtered)))
+        ds_filtered = ds_filtered.select(range(last_index, len(ds_filtered)))
     return ds_filtered
    
 # def single_process(example, p_tokenizer, device, out_path):
@@ -294,7 +314,7 @@ def batch_process(batch, device, out_path=None):
     proc_id = str(os.getpid())
     with torch.no_grad(), open(out_path+"_"+proc_id+".gop", "a") as f:
         for i,uid in enumerate(batch["id"]):
-            # if uid != "fadf1an2":
+            # if uid != "fkmn1cu2":
             #     continue
             print("processing {0}".format(uid))    
             pid_seq = ctm_dict[uid]
@@ -354,7 +374,7 @@ if __name__ == "__main__":
     ctm_dict = read_ctm(sys.argv[5])
     uttid_list = list(ctm_dict.keys())
     dur_list = read_dur(sys.argv[6])
-    subset_list = [ uttid for uttid, dur in dur_list if dur < 10 ]
+    subset_list = [ uttid for uttid, dur in dur_list if dur < 6 ]
     csv_path = Path(sys.argv[3])
     
     out_path = sys.argv[7]

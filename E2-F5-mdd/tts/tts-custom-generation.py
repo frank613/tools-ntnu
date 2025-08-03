@@ -98,9 +98,9 @@ if __name__ == "__main__":
     frames_per_second = target_sample_rate // hop_length
     seed = None
     
-    null_cond = True
+    null_cond = False
     no_audio = False
-    no_text = True
+    no_text = False
     
     
     #load vocab and tokenizer
@@ -134,10 +134,11 @@ if __name__ == "__main__":
     #prepare input
     #If English punctuation marks the end of a sentence, 
     #make sure there is a space " " after it. Otherwise not regarded as when chunk.
-    ref_text = "I am Xinwei."
+    #ref_text = "I am Xinwei."
+    ref_text = "公司要倒闭了. 我要跑路了."
     #target_text = "我还可以说中文呢."
     #target_text = "你今天什么时候来上班"
-    target_text = "I love to eat fishes."
+    target_text = "I love to eat dicks. 我想吃大鸡巴."
     text_list = [ref_text+target_text]
     
     ## mask and gen
