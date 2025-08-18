@@ -53,8 +53,8 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
-max_batch = 16
-t_inerval = 16
+max_batch = 32
+
 
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
@@ -196,11 +196,10 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
                     diff_symbol = diff_symbol,
-                    sway_sampling_coef = sway_sampling_coef,
-                    t_inerval = t_inerval,             
+                    sway_sampling_coef = sway_sampling_coef,           
             )
         ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_prob( **input_kwargs)
+        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_traLen( **input_kwargs)
         log_prob_y0 = torch.concat((log_prob_y0,log_prob_y0_temp))
         log_prob_y0_null = torch.concat((log_prob_y0_null,log_prob_y0_null_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -304,13 +303,13 @@ def batch_process(batch, device, out_path=None):
     model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
     dtype = next(model.parameters()).dtype
     ##mdd parameters:
-    cfg_strength_gop=2
+    cfg_strength_gop=1
     #diff_symbol=" "
     diff_symbol=None
     masking_ratio=1.5
     steps=16
     #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    sway_sampling_coef = None
     
     print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
     #We need training mode because ODE?
@@ -383,8 +382,7 @@ if __name__ == "__main__":
     #last_utt = "facs2av2"
     #last_utt = "fabm2ci1"
     #last_utt = "fadf1ab2"
-    last_utt = "flbb1di2"
-    
+    last_utt = None
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

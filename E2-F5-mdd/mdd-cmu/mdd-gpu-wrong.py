@@ -54,8 +54,6 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
 max_batch = 16
-t_inerval = 16
-
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
@@ -131,6 +129,7 @@ def mdd_mask( pid_seq, mask_ratio, device):
 def compute_gop(out_probs, out_probs_diff, phoneme_mask_list):
     assert len(out_probs.shape) == 2 ## 2D tensor, B x NumFrame
     np = out_probs.shape[0]
+    assert np == len(phoneme_mask_list)
     gop_list = [ out_probs[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
     gop_list_diff = [ out_probs_diff[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
     gop_list_diff = [ gop - gop_diff for gop, gop_diff in zip(gop_list, gop_list_diff)]
@@ -170,15 +169,10 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
-    assert masking_ratio >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
     phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
     num_phonemes = len(pid_seq)
-    if cfg_strength_gop != 0:
-        max_batch_new = round(max_batch * 0.8)
-    else:
-        max_batch_new = max_batch
-    quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
-    if res <= 0.5 * max_batch_new:
+    quo, res = num_phonemes // max_batch, num_phonemes % max_batch
+    if res <= 0.5 * max_batch:
         iter_num = quo if quo > 0 else 1
     else:
         iter_num = quo + 1
@@ -186,8 +180,8 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     log_prob_y0 = torch.rand((0), device=device)
     log_prob_y0_null = torch.rand((0), device=device)
     for i in range(iter_num):
-        b_size = max_batch_new if i != iter_num-1 else num_phonemes-count
-        phoneme_mask_in = phoneme_mask_list[count:count+b_size]
+        b_size = max_batch if i != iter_num-1 else num_phonemes-count
+        phoneme_mask_in = phoneme_mask_list[count:count+b_size]  
         input_kwargs = dict(
                     mel_target=[cond] * b_size,
                     text=[text_in] * b_size, 
@@ -196,15 +190,16 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
                     diff_symbol = diff_symbol,
-                    sway_sampling_coef = sway_sampling_coef,
-                    t_inerval = t_inerval,             
+                    sway_sampling_coef = sway_sampling_coef,             
             )
+                    
         ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_prob( **input_kwargs)
+        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_prob_wrong( **input_kwargs)
         log_prob_y0 = torch.concat((log_prob_y0,log_prob_y0_temp))
         log_prob_y0_null = torch.concat((log_prob_y0_null,log_prob_y0_null_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
-        count += b_size           
+        count += b_size
+        
     gop, gop_diff = compute_gop(log_prob_y0, log_prob_y0_null, phoneme_mask_list_orig)
     return gop, gop_diff
     
@@ -308,11 +303,10 @@ def batch_process(batch, device, out_path=None):
     #diff_symbol=" "
     diff_symbol=None
     masking_ratio=1.5
-    steps=16
+    steps=4
     #sway_sampling_coef = None
     sway_sampling_coef = -1
     
-    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
     #We need training mode because ODE?
     #model.eval()
     proc_id = str(os.getpid())
@@ -351,6 +345,8 @@ if __name__ == "__main__":
     n_fft = model_cfg.model.mel_spec.n_fft
     n_mel_channels = model_cfg.model.mel_spec.n_mel_channels
     frames_per_second = target_sample_rate // hop_length
+    mask_ratio = 1
+    
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
 
@@ -380,11 +376,10 @@ if __name__ == "__main__":
     csv_path = Path(sys.argv[3])
     
     out_path = sys.argv[7]
-    #last_utt = "facs2av2"
-    #last_utt = "fabm2ci1"
-    #last_utt = "fadf1ab2"
-    last_utt = "flbb1di2"
-    
+    #last_utt = "mjsd3ac2"
+    #last_utt = "fabm2dt1"
+    #last_utt="fabm2cs2"
+    last_utt = "famm1aw1"
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):
