@@ -53,7 +53,7 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
-max_batch = 16
+max_batch = 12
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
 torch.set_num_threads(1)
@@ -299,7 +299,7 @@ def batch_process(batch, device, out_path=None):
     model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
     dtype = next(model.parameters()).dtype
     ##mdd parameters:
-    cfg_strength_gop=0
+    cfg_strength_gop=2
     #diff_symbol=" "
     diff_symbol=None
     masking_ratio=1.5
@@ -380,7 +380,7 @@ if __name__ == "__main__":
     #last_utt = "fabm2dt1"
     #last_utt="fabm2cs2"
     #last_utt = "famp2cz1"
-    last_utt = None
+    last_utt = "fdjf1ba2"
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

@@ -199,7 +199,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     sway_sampling_coef = sway_sampling_coef,           
             )
         ## NAR+len, return a list of avg-posterior, and a list of pooled-posterior, the length is based on total_levels
-        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_similarity( **input_kwargs)
+        log_prob_y0_temp, log_prob_y0_null_temp = model.compute_prob_aabb( **input_kwargs)
         log_prob_y0 = torch.concat((log_prob_y0,log_prob_y0_temp))
         log_prob_y0_null = torch.concat((log_prob_y0_null,log_prob_y0_null_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -303,11 +303,11 @@ def batch_process(batch, device, out_path=None):
     model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
     dtype = next(model.parameters()).dtype
     ##mdd parameters:
-    cfg_strength_gop=2
+    cfg_strength_gop=0
     #diff_symbol=" "
     diff_symbol=None
     masking_ratio=1.5
-    steps=64
+    steps=4
     #sway_sampling_coef = None
     sway_sampling_coef = -1
     

@@ -1,4 +1,4 @@
-from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE
+from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE, FixedGridODESolverJACOBTRACE_Wrong, FixedGridODESolverDist, FixedGridODESolverAABB
 from .rk_common import rk4_alt_step_func, rk3_step_func, rk2_step_func
 from .misc import Perturb
 import pdb
@@ -18,6 +18,28 @@ class Euler_MDD(FixedGridODESolverJACOBTRACE):
     def _step_func(self, func, t0, dt, t1, y0):
         f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
         return dt * f0, f0
+    
+##XINWEIL: for MDD
+class Euler_MDD_Wrong(FixedGridODESolverJACOBTRACE_Wrong):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+
+##XINWEIL: for MDD
+class Euler_MDD_Dist(FixedGridODESolverDist):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+    
+##XINWEIL: for MDD
+class Euler_MDD_aabb(FixedGridODESolverAABB):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+
 
 class Midpoint(FixedGridODESolver):
     order = 2

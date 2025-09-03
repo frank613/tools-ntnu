@@ -302,13 +302,12 @@ def batch_process(batch, device, out_path=None):
     #diff_symbol=" "
     diff_symbol=None
     masking_ratio=1.5
-    steps=48
+    steps=32
     #sway_sampling_coef = None
     sway_sampling_coef = -1
     #sway_sampling_coef = 1
     
-    #We need training mode because ODE?
-    #model.eval()
+    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
     proc_id = str(os.getpid())
     with torch.no_grad(), open(out_path+"_"+proc_id+".gop", "a") as f:
         for i,uid in enumerate(batch["id"]):
