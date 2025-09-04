@@ -53,7 +53,7 @@ re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
 
 #RE for CMU-kids
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
-max_batch = 32
+max_batch = 16
 
 
 
@@ -173,6 +173,10 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     assert masking_ratio >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
     phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
     num_phonemes = len(pid_seq)
+    ###dynamic batch_size
+    amount = num_phonemes * duration_mel
+    max_batch = int(32*(10000/amount))
+
     if cfg_strength_gop != 0:
         max_batch_new = round(max_batch * 0.8)
     else:
@@ -382,7 +386,7 @@ if __name__ == "__main__":
     #last_utt = "facs2av2"
     #last_utt = "fabm2ci1"
     #last_utt = "fadf1ab2"
-    last_utt = None
+    last_utt = "fabm2ar2"
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

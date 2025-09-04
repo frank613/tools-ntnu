@@ -646,7 +646,7 @@ class FixedGridODESolverJACOBTRACE_Wrong(metaclass=abc.ABCMeta):
                 return temp_grad
             get_trace_batch = torch.vmap(get_trace, in_dims=2, out_dims=2, chunk_size=grad_batch)
             results = get_trace_batch(g_out) ##  B x T x D x D Tensor
-            #negate for forward
+            #negate for forward  ------ ??? why????
             jacob_trace[i+1] = torch.diagonal(-results[0],  dim1=-2, dim2=-1).sum(-1)
             del dy,f0
             torch.cuda.empty_cache()
@@ -899,23 +899,25 @@ class FixedGridODESolverAABB(metaclass=abc.ABCMeta):
         jacob_trace = torch.zeros(len(t)-1, *self.y0.shape[:-1], dtype=self.y0.dtype, device=self.y0.device)
 
         def aabb_estimate(input, t): ## in: B x T x D 
-            eps = torch.finfo(self.y0.dtype).eps
-            #in_plus = input[...,None,:].repeat(1,1,d_size,1) + torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D x D          
-            #in_minus = input[...,None,:].repeat(1,1,d_size,1) - torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D x D
+            eps = 3*torch.finfo(self.y0.dtype).eps  ## 3 because == operatior 
+            in_plus = input[...,None,:].repeat(1,1,d_size,1) + torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D x D          
+            in_minus = input[...,None,:].repeat(1,1,d_size,1) - torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D x D
             in_plus = input[None].repeat(d_size,1,1,1)  #D x B x T x D x D          
             in_minus = input[None].repeat(d_size,1,1,1) #D x B x T x D x D
             for i in range(d_size):
                 in_plus[i,:,:,i]+=eps
                 in_minus[i,:,:,i]-=eps
             jacob = ((self.func(t, in_plus.view(-1,t_size,d_size)) - self.func(t, in_minus.view(-1,t_size,d_size))) / 2*eps).reshape(d_size,*y0.shape)
+            pdb.set_trace()
             trace = torch.diagonal(jacob.transpose(0,1).transpose(1,2), dim1=-2, dim2=-1).sum(-1)
             ##slow
-            # trace = 01
+            # trace = 0
             # for i in range(d_size): 
             #     in_plus = input.clone() 
             #     in_plus[:,:,i] += eps
             #     in_minus = input.clone()
             #     in_minus[:,:,i] -= eps
+            #     pdb.set_trace()
             #     trace += (self.func(t, in_plus)[:,:,i] - self.func(t, in_minus)[:,:,i]) / 2*eps
             return trace            
         y0 = self.y0
@@ -984,3 +986,322 @@ class FixedGridODESolverAABB(metaclass=abc.ABCMeta):
             return y1
         slope = (t - t0) / (t1 - t0)
         return y0 + slope * (y1 - y0)
+       
+##XINWEI: for MDD
+class FixedGridODESolverAABBFIX(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def integrate(self, t, t_interval):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        jacob_trace = torch.zeros(len(t)-1, *self.y0.shape[:-1], dtype=self.y0.dtype, device=self.y0.device)
+
+        def aabb_estimate(input, t_in): ## in: B x T x D 
+            eps = 3*torch.finfo(self.y0.dtype).eps  ## 3 because == operatior  
+            trace = torch.zeros(*self.y0.shape[:-1], dtype=self.y0.dtype, device=self.y0.device)         
+            for t in range(t_interval):
+                t_index_single = torch.arange(start=t, end=t_size, step=t_interval, device=self.y0.device)  
+                in_plus = input[None].repeat(d_size,1,1,1)  #D x B x T x D         
+                in_minus = input[None].repeat(d_size,1,1,1) #D x B x T x D 
+                for i in range(d_size):
+                    in_plus[i,:,t_index_single,i]+=eps
+                    in_minus[i,:,t_index_single,i]-=eps
+                jacob = ((self.func(t_in, in_plus.view(-1,t_size,d_size)) - self.func(t_in, in_minus.view(-1,t_size,d_size))) / 2*eps).reshape(-1,*y0.shape)
+                trace[:, t_index_single] = (torch.diagonal(jacob.transpose(0,1).transpose(1,2), dim1=-2, dim2=-1).sum(-1))[:,t_index_single]         
+            # in_plus = input[...,None,:].repeat(1,1,d_size,1) + torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D          
+            # in_minus = input[...,None,:].repeat(1,1,d_size,1) - torch.eye(d_size, dtype=self.y0.dtype, device=self.y0.device)*eps #B x T x D 
+            # in_plus = input[None].repeat(d_size,1,1,1)  #D x B x T x D         
+            # in_minus = input[None].repeat(d_size,1,1,1) #D x B x T x D 
+            # for i in range(d_size):
+            #     in_plus[i,:,:,i]+=eps
+            #     in_minus[i,:,:,i]-=eps
+            # jacob = ((self.func(t, in_plus.view(-1,t_size,d_size)) - self.func(t, in_minus.view(-1,t_size,d_size))) / 2*eps).reshape(d_size,*y0.shape)
+            # pdb.set_trace()
+            # trace = torch.diagonal(jacob.transpose(0,1).transpose(1,2), dim1=-2, dim2=-1).sum(-1)
+            return trace            
+        y0 = self.y0
+        iterator = tqdm(zip(time_grid[:-1], time_grid[1:]), desc="ODE MDD")
+        #iterator = zip(time_grid[:-1], time_grid[1:])
+        ## from this version on, we only store the end-point jacobian and solution
+        for i, (t0, t1) in enumerate(iterator):
+            dt = t1 - t0  ## always greater than 0
+            dy, f0 = self._step_func(self.func, t0, dt, None, y0)
+            y1 = y0 + dy
+            jacob_trace[i] = aabb_estimate(y1, t1)
+            solution[i] = y1
+            y0 = y1          
+            
+        return solution, jacob_trace
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0)  
+    
+class FixedGridODESolverHut(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def integrate(self, t, cond_mask, n_samples):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        jacob_trace = torch.zeros(len(t)-1, *self.y0.shape[:-1], dtype=self.y0.dtype, device=self.y0.device)
+
+        with torch.enable_grad():
+            y0 = self.y0
+            iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
+            #iterator = zip(time_grid[:-1], time_grid[1:])
+            ## from this version on, we only store the end-point jacobian and solution
+            for i, (t0, t1) in enumerate(iterator):
+                if i == 0: # no need grad
+                    dt = time_grid[1] - time_grid[0]  ## always greater than 0
+                    dy, f0 = self._step_func(self.func, t0, dt, None, y0)
+                y1 = y0 + dy
+                solution[i] = y1
+                y0 = y1
+                ##HUT approx
+                ##step 1, sampling
+                v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1
+                ##step 2, masking the targets
+                pdb.set_trace() 
+                ##pdb check cond_mask dim and TRUE/FALSE
+                v[cond_mask] = 0
+                ##step 3, consturct the input, enable the requried segment
+                pdb.set_trace() ###pdb check TRUE/FALSE
+                y1[~cond_mask].requires_grad_(True)
+                ##step 4, forward and backward
+                dt = t1 - t0
+                dy, f1 = self._step_func(self.func, t0, dt, None, y1)
+                def get_trace_hut(v_in, y1_in):
+                    temp_grad = torch.autograd.grad(f1, y1_in, v_in, retain_graph=True) ##  B x N X T x D Tensor
+                    return temp_grad
+                get_trace_batch = torch.vmap(get_trace_hut, in_dims=(1, None), out_dims=1)
+                for b_idx in range(b_size):
+                    jacob_trace[i, b_idx] = get_trace_batch(v[b_idx], y1[b_idx, ~cond_mask[b_idx]]).mean(dim=-1)
+                #del f1
+                torch.cuda.empty_cache() 
+                ##final steps              
+                if i == len(iterator) - 1:
+                    y1 = y0 + dy
+                    solution[i+1] = y1
+                    y1[~cond_mask].requires_grad_(True)
+                    dt = 1
+                    dy, f1 = self._step_func(self.func, t0, dt, None, y1)
+                    def get_trace_hut(v_in, y1_in):
+                        temp_grad = torch.autograd.grad(f1, y1_in, v_in, retain_graph=True) ##  B x N X T x D Tensor
+                        return temp_grad
+                    get_trace_batch = torch.vmap(get_trace_hut, in_dims=(1, None), out_dims=1)
+                    for b_idx in range(b_size):
+                        jacob_trace[i+1, b_idx] = get_trace_batch(v[b_idx], y1[b_idx, ~cond_mask[b_idx]]).mean(dim=-1)  
+                    torch.cuda.empty_cache()                
+        return solution, jacob_trace
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0)  
+   
