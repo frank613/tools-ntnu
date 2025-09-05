@@ -271,7 +271,7 @@ def odeint_dist(func, y0, t, *, rtol=1e-7, atol=1e-9, method=None, options=None,
         sys.exit("no supported in ode-dist")
 
 ##XINWEI: Hut approximation return gop directly
-def odeint_jacobian_hut(func, y0, t, cond_mask, *, rtol=1e-7, atol=1e-9, method=None, options=None, event_fn=No):
+def odeint_jacobian_hut(func, y0, t, cond_mask, n_samples, *, rtol=1e-7, atol=1e-9, method=None, options=None, event_fn=None):
     """Integrate a system of ordinary differential equations.
 
     Solves the initial value problem for a non-stiff system of first order ODEs:
@@ -318,7 +318,7 @@ def odeint_jacobian_hut(func, y0, t, cond_mask, *, rtol=1e-7, atol=1e-9, method=
     solver = Euler_MDD_Hut(func=func, y0=y0, rtol=rtol, atol=atol, **options)
 
     if event_fn is None:
-        solution, jacob_trace = solver.integrate(t, cond_mask)
+        solution, jacob_trace = solver.integrate(t, cond_mask, n_samples)
     else:
         sys.exit("not supported in this MDD version")
     
