@@ -134,18 +134,18 @@ if __name__ == "__main__":
     #prepare input
     #If English punctuation marks the end of a sentence, 
     #make sure there is a space " " after it. Otherwise not regarded as when chunk.
-    #ref_text = "I am Xinwei."
-    ref_text = "公司要倒闭了. 我要跑路了."
+    ref_text = "I am Xinwei."
+    #ref_text = "公司要倒闭了. 我要跑路了."
     #target_text = "我还可以说中文呢."
     #target_text = "你今天什么时候来上班"
-    target_text = "I love to eat dicks. 我想吃大鸡巴."
+    target_text = "Make sure there is a space."
     text_list = [ref_text+target_text]
     
     ## mask and gen
     audio_in_path = Path(sys.argv[3])
     cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
     ref_mel_len = math.floor(cond.shape[-1] / hop_length)
-    target_mel_len =  math.ceil((cond.shape[-1]/hop_length)*(len(target_text)/len(ref_text)))
+    target_mel_len =  math.ceil((cond.shape[-1]/hop_length)*(len(target_text)/(3*len(ref_text))))
     final_mel_len = ref_mel_len + target_mel_len
 
    
@@ -182,6 +182,7 @@ if __name__ == "__main__":
     
     ## TTS, "cond" is in sampling_rate while mask is in frame_rate   
     repeats = 5
+    cfg_strength = 2
     for i in range(repeats):
         # Inference
         with torch.inference_mode():
@@ -205,5 +206,5 @@ if __name__ == "__main__":
         ##save
         os.makedirs(sys.argv[4], exist_ok=True)
         #save_spectrogram(gen_mel_spec[0].cpu().numpy(), f"{sys.argv[4]}/{i}.png")
-        torchaudio.save(f"{sys.argv[4]}/{i}.wav", generated_wave, target_sample_rate)
+        torchaudio.save(f"{sys.argv[4]}_{i}.wav", generated_wave, target_sample_rate)
         print(f"Generated wav_{i}: {generated_wave.shape}")

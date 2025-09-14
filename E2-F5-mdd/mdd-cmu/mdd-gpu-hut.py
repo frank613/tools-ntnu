@@ -164,25 +164,26 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     assert masking_ratio >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
     phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
     num_phonemes = len(pid_seq)
-    ###dynamic batch_size
-    # amount = num_phonemes * duration_mel
-    # max_batch = int(32*(10000/amount))
 
-    # if cfg_strength_gop != 0:
-    #     max_batch_new = round(max_batch * 0.8)
-    # else:
-    #     max_batch_new = max_batch
-    max_batch_new = 128
-    quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
-    if res <= 0.5 * max_batch_new:
-        iter_num = quo if quo > 0 else 1
+    if cfg_strength_gop != 0:
+        ##dynamic batch_size
+        amount = num_phonemes * duration_mel
+        max_batch_new = int(num_phonemes*(25000/amount))
     else:
-        iter_num = quo + 1
+        max_batch_new = 128
+    # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
+    # if res <= 0.5 * max_batch_new:
+    #     iter_num = quo if quo > 0 else 1
+    # else:
+    #     iter_num = quo + 1
+    iter_num = (num_phonemes) // max_batch_new + 1
     count = 0
     gop = torch.rand((0), device=device)
     gop_diff = torch.rand((0), device=device)
     for i in range(iter_num):
         b_size = max_batch_new if i != iter_num-1 else num_phonemes-count
+        if b_size == 0:
+            continue
         phoneme_mask_in = phoneme_mask_list[count:count+b_size]
         input_kwargs = dict(
                     mel_target=[cond] * b_size,
@@ -310,8 +311,8 @@ def batch_process(batch, device, out_path=None):
     masking_ratio=1
     steps=16
     n_samples=5
-    sway_sampling_coef = None
-    #sway_sampling_coef = -1
+    #sway_sampling_coef = None
+    sway_sampling_coef = -1
     
     print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
     #We need training mode because ODE?
@@ -385,7 +386,9 @@ if __name__ == "__main__":
     #last_utt = "fabm2ci1"
     #last_utt = "fadf1ab2"
     #last_utt = "fabm2ar2"
-    last_utt=None
+    #last_utt="fabm2dt1"
+    #last_utt = "flas1cn2"
+    last_utt = None
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

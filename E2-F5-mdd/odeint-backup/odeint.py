@@ -313,6 +313,7 @@ def odeint_jacobian_hut(func, y0, t, cond_mask, n_samples, *, rtol=1e-7, atol=1e
     """
 
     shapes, func, y0, t, rtol, atol, method, options, event_fn, t_is_reversed = _check_inputs(func, y0, t, rtol, atol, method, options, event_fn, SOLVERS)
+
     assert method == "euler_mdd"
 
     solver = Euler_MDD_Hut(func=func, y0=y0, rtol=rtol, atol=atol, **options)

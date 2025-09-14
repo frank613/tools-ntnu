@@ -19,6 +19,7 @@ from f5_tts.infer.utils_infer import (
     fix_duration,
     device,
     infer_process,
+    load_model,
     load_model_mdd,
     load_vocoder,
     save_spectrogram,
@@ -145,7 +146,7 @@ if __name__ == "__main__":
     target_sample_rate = model_cfg.model.mel_spec.target_sample_rate
     hop_length = model_cfg.model.mel_spec.hop_length
     frames_per_second = target_sample_rate // hop_length
-    mask_ratio = 2
+    mask_ratio = 3
     seed = None
     filling = False
     null_cond = False
@@ -188,11 +189,11 @@ if __name__ == "__main__":
     #If English punctuation marks the end of a sentence, 
     #make sure there is a space " " after it. Otherwise not regarded as when chunk.
     uid = "fabm2aa1"
+    uid = "fabm2bn2"
     if uid not in uttid_list:
         sys.exit("can't find the uid in data")
     target_text = trans_map[uid]
     text_list = [target_text]
-    
     ## mask and gen
     audio_in_path = Path(sys.argv[3])
     cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
@@ -219,6 +220,38 @@ if __name__ == "__main__":
     print(f"text  : {text_list}")
     print(f"pinyin: {final_text_list}")
 
+    ## TTS filling the next half
+    repeats = 3
+    for i in range(repeats):
+        l = int(duration_mel/2)
+        cond_mask = torch.ones(duration_mel,  dtype=torch.bool, device=device)
+        cond_mask[l:] = False
+        
+        # Inference
+        with torch.inference_mode():
+            generated, trajectory, cond_mel = ema_model.sample(
+                cond=cond,
+                text=final_text_list,
+                duration=int(duration_mel*1.2), ##scale it
+                steps=nfe_step,
+                cfg_strength=cfg_strength,
+                sway_sampling_coef=sway_sampling_coef,
+                seed=seed,
+                edit_mask=cond_mask,
+            )
+        print(f"Generated mel_{i}: {generated.shape}")
+        generated = generated.to(torch.float32)
+        gen_mel_spec = generated.permute(0, 2, 1)  ##batch, lenth, channel
+        if mel_spec_type == "vocos":
+            generated_wave = vocoder.decode(gen_mel_spec).cpu()
+        elif mel_spec_type == "bigvgan":
+            generated_wave = vocoder(gen_mel_spec).squeeze(0).cpu()
+        ##save
+        os.makedirs(sys.argv[6], exist_ok=True)
+        #save_spectrogram(gen_mel_spec[0].cpu().numpy(), f"{sys.argv[6]}/speech_edit_{pid}.png")
+        torchaudio.save(f"{sys.argv[6]}/filling_half_{i}.wav", generated_wave, target_sample_rate)
+        print(f"Generated wav_half{i}: {generated_wave.shape}")
+        
     ## TTS, "cond" is in sampling_rate while mask is in frame_rate   
     repeats = 1
     for i, (pid, l_orig, r_orig) in enumerate(pid_seq):

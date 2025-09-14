@@ -1,0 +1,7 @@
+export CUDA_VISIBLE_DEVICES=5
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+python mdd-gpu.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ./data/data-for-vallE/cmu-kids/utt2dur ./outputs/cfg0-diffNone-s4-sw0-mr1/gpu
+
+python mdd-gpu.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ./data/data-for-vallE/cmu-kids/utt2dur ./outputs/cfg2-diffNone-s16-swm1-mr15/gpu
+
+python mdd-gpu-wrong.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ./data/data-for-vallE/cmu-kids/metadata.csv ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ./data/data-for-vallE/cmu-kids/utt2dur ./outputs-wrong/cfg0-diffNone-s16-sw0-mr15/

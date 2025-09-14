@@ -116,7 +116,6 @@ class FixedGridODESolver(metaclass=abc.ABCMeta):
             self.func.callback_step(t0, y0, dt)
             dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
             y1 = y0 + dy
-
             while j < len(t) and t1 >= t[j]:
                 if self.interp == "linear":
                     solution[j] = self._linear_interp(t0, t1, y0, y1, t[j])
@@ -1206,7 +1205,7 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
         # with torch.enable_grad():
         y0 = self.y0
         #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
-        iterator = zip(time_grid[:-1], time_grid[1:])
+        iterator = zip(time_grid[1:-1], time_grid[2:])
         
         def batch_v_p(v1, v2): ##for vmap, v1: P x D, v1_orig: N x P x D  return, 1 x 1
             return torch.bmm(v1.view(v1.shape[0], 1, -1), v2.view(v2.shape[0],-1,1)).sum()
@@ -1215,12 +1214,15 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
         for i, (t0, t1) in enumerate(iterator):
             if i == 0: # no need grad
                 dt = time_grid[1] - time_grid[0]  ## always greater than 0
-                dy, f0 = self._step_func(self.func, t0, dt, None, y0)
+                dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
             y1 = y0 + dy
             solution[i] = y1
             ##HUT approx
             ##step 1, sampling 
-            v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # B x N x T x D
+            ## 0/1 sampling
+            #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # B x N x T x D
+            ## Gaussian sampling
+            v = torch.randn(b_size,n_samples,t_size,d_size, device=self.device, dtype=self.y0.dtype)
             ##step 2, masking the targets
             v[cond_mask[:,None].expand(b_size,n_samples,t_size)] = 0
             ##step 3, consturct the input, enable the requried segment
@@ -1237,25 +1239,28 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
                 ##step 4, forward and backward
                 dt = t1 - t0
                 dy, f1 = self._step_func(self.func, t0, dt, None, torch.stack(y1_list))
-                f1_list = [f1[b_idx] for b_idx in range(f1.shape[0])]  
+                ###negate because the function in revsered during backward process
+                f1_list = [-f1[b_idx] for b_idx in range(f1.shape[0])]  
                 def get_trace_hut(v_in):
                     v_list = [v_in[b_idx] for b_idx in range(v_in.shape[0])]
-                    vjp =torch.autograd.grad(f1_list, grad_list, v_list, retain_graph=True) ## B(tuple) x N x D Tensor
+                    vjp =torch.autograd.grad(f1_list, grad_list, v_list, retain_graph=False) ## B(tuple) x N x D Tensor
                     return vjp
                 get_vjp_batch = torch.vmap(get_trace_hut, in_dims=1, out_dims=0)  
                 vjp = get_vjp_batch(v)
                 tr_list = [get_trace_batch(grad, v[idx, :, ~cond_mask[idx]].to(self.y0.dtype)).mean() for idx,grad in enumerate(vjp)]
-                jacob_trace[i] = torch.tensor(tr_list, device=self.y0.device)              
-                #del f1           
+                jacob_trace[i] = torch.tensor(tr_list, device=self.y0.device)                       
             y0 = y1.detach()
-            #torch.cuda.empty_cache() 
+            del f1 
+            torch.cuda.empty_cache() 
             ##final steps              
             if i == time_grid.shape[0] - 3:
                 y1 = y0 + dy
                 solution[i+1] = y1
                 ##HUT approx
                 ##step 1, sampling 
-                v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1
+                #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1
+                ## Gaussian sampling
+                v = torch.randn(b_size,n_samples,t_size,d_size, device=self.device, dtype=self.y0.dtype)
                 ##step 2, masking the targets
                 v[cond_mask[:,None].expand(b_size,n_samples,t_size)] = 0
                 ##step 3, consturct the input, enable the requried segment
@@ -1271,8 +1276,9 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
                         y1_list.append(y1_row)
                     ##step 4, forward and backward
                     dt = 1
-                    dy, f1 = self._step_func(self.func, t0, dt, None, torch.stack(y1_list))
-                    f1_list = [f1[b_idx] for b_idx in range(f1.shape[0])]                 
+                    dy, f1 = self._step_func(self.func, t1, dt, None, torch.stack(y1_list))
+                    ###negate because the function in revsered during backward process
+                    f1_list = [-f1[b_idx] for b_idx in range(f1.shape[0])]                 
                     def get_trace_hut(v_in):
                         v_list = [v_in[b_idx] for b_idx in range(v_in.shape[0])]
                         vjp =torch.autograd.grad(f1_list, grad_list, v_list, retain_graph=False) ## B(tuple) x N x D Tensor
@@ -1281,6 +1287,7 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
                     vjp = get_vjp_batch(v)
                     tr_list = [get_trace_batch(grad, v[idx, :, ~cond_mask[idx]].to(self.y0.dtype)).mean() for idx,grad in enumerate(vjp)]
                     jacob_trace[i+1] = torch.tensor(tr_list, device=self.y0.device)      
+                    del f1
                     #slow version deprecated       
                     # def get_trace_hut(f1_in, y1_in, v_in, mask):
                     #     temp_grad = torch.autograd.grad(f1_in, y1_in, v_in, retain_graph=True)[0] ##  N x D Tensor
@@ -1290,7 +1297,7 @@ class FixedGridODESolverHut(metaclass=abc.ABCMeta):
                     # for b_idx in range(b_size):
                     #     jacob_trace[i+1, b_idx] = get_trace_batch(f1[b_idx], grad_list[b_idx], v[b_idx], ~cond_mask[b_idx]).mean()     
                     #del f1
-                #torch.cuda.empty_cache()                            
+                torch.cuda.empty_cache()                            
         return solution, jacob_trace
 
     def integrate_until_event(self, t0, event_fn):
