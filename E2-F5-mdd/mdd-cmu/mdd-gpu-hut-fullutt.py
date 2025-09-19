@@ -193,7 +193,6 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     steps = steps,
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
-                    phoneme_mask_list_orig = phoneme_mask_list_orig_in,
                     diff_symbol = diff_symbol if diff_symbol is None else diff_symbol * b_size,
                     sway_sampling_coef = sway_sampling_coef,
                     n_samples = n_samples,
@@ -201,7 +200,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut_mask( **input_kwargs)
+        gop_temp, gop_diff_temp = model.compute_prob_hut_fullutt( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)

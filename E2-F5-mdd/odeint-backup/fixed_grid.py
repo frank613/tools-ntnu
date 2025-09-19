@@ -1,4 +1,4 @@
-from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE, FixedGridODESolverJACOBTRACE_Wrong, FixedGridODESolverDist, FixedGridODESolverAABB, FixedGridODESolverAABBFIX, FixedGridODESolverHut
+from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE, FixedGridODESolverJACOBTRACE_Wrong, FixedGridODESolverDist, FixedGridODESolverAABB, FixedGridODESolverAABBFIX, FixedGridODESolverHut, FixedGridODESolverHutFull
 from .rk_common import rk4_alt_step_func, rk3_step_func, rk2_step_func
 from .misc import Perturb
 import pdb
@@ -49,6 +49,13 @@ class Euler_MDD_aabb_fix(FixedGridODESolverAABBFIX):
 
 ##XINWEIL: for MDD
 class Euler_MDD_Hut(FixedGridODESolverHut):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+
+##XINWEIL: for MDD
+class Euler_MDD_Hut_full(FixedGridODESolverHutFull):
     order = 1
     def _step_func(self, func, t0, dt, t1, y0):
         f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)

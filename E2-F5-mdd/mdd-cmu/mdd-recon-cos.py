@@ -307,13 +307,14 @@ def batch_process(batch, device, out_path=None):
     cfg_strength_gop=0
     #diff_symbol=" "
     diff_symbol=None
-    masking_ratio=1
-    steps=4
+    masking_ratio=3
+    steps=8
     sway_sampling_coef = None
     #sway_sampling_coef = -1
-    remove_first_t_back = False
+    remove_first_t_back = True
     
-    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
+    
+    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}, RT={remove_first_t_back}")
     #We need training mode because ODE?
     #model.eval()
     proc_id = str(os.getpid())

@@ -146,10 +146,10 @@ if __name__ == "__main__":
     target_sample_rate = model_cfg.model.mel_spec.target_sample_rate
     hop_length = model_cfg.model.mel_spec.hop_length
     frames_per_second = target_sample_rate // hop_length
-    mask_ratio = 3
+    mask_ratio = 1.5
     seed = None
     filling = False
-    null_cond = False
+    null_cond = True
     
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     #If English punctuation marks the end of a sentence, 
     #make sure there is a space " " after it. Otherwise not regarded as when chunk.
     uid = "fabm2aa1"
-    uid = "fabm2bn2"
+    #uid = "fabm2bn2"
     if uid not in uttid_list:
         sys.exit("can't find the uid in data")
     target_text = trans_map[uid]
@@ -204,7 +204,11 @@ if __name__ == "__main__":
     ###Null Condition
     ###Warning, single " " == <SPACE><PAD>....!= all <SPACE>, check class TextEmbedding
     if null_cond:
-        text_list = [ " " for text in text_list ]
+        #text_list = [ " " for text in text_list ]
+        #text_list = ["a a a a a a a a a a a a a a a a a a" for text in text_list]
+        #text_list = ["e e e e e e e e e e e e e e e e e e" for text in text_list]
+        #text_list = ["只 只 只 只 只 只 只 只 只 只 只 只 只 只" for text in text_list]
+        text_list = ["a pianist walked through a field"]
     
     #tokenizer
     if tokenizer == "pinyin":
