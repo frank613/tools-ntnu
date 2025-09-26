@@ -309,11 +309,11 @@ def batch_process(batch, device, out_path=None):
     for param in model.parameters():
         param.requires_grad = False   
     ##mdd parameters:
-    cfg_strength_gop=2
+    cfg_strength_gop=2.5
     diff_symbol = None
     #diff_symbol="p"
     #diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
-    masking_ratio=1
+    masking_ratio=1.0
     steps=4
     n_samples=10
     sway_sampling_coef = None

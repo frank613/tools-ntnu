@@ -1,0 +1,4 @@
+export CUDA_VISIBLE_DEVICES=5
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+python mdd-gpu-hut-mr-forSO.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ./data/data-for-vallE/speechocean762/metadata.csv ../prep-so/transcriptions-so/sentence_all.txt ../prep-so/transcriptions-so/so_test.ctm ./data/data-for-vallE/speechocean762/utt2dur.test ./outputs-hut/test-cfg0-diffNone-s4-sw0-mr1/test-gpu
+

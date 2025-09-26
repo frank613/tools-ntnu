@@ -7,3 +7,4 @@ python evaluate_gop_feats_kaldi.py ./feat_kaldi_combined.scp ./metadata.csv ./ut
 
 
 python evaluate_gop_model_valle.py ./gops/combined_diff_blank_nolex_align.gop ./metadata.csv ./utt2dur.train ./utt2dur.test
+python evaluate_gop_feats_flow.py ./feat_kaldi_combined.scp ./feats-gops-flow/cfg2-diffNone-s4-sw0-mr15/all_gop.feats ./metadata.csv ./utt2dur.test ./utt2dur.train

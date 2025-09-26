@@ -48,13 +48,11 @@ re_phone = re.compile(r'([@:a-zA-Z]+)([0-9])?(_\w)?')
 spec_tokens = set(("<pad>", "<s>", "</s>", "<unk>", "|"))
 sil_tokens = set(["sil","SIL","SPN"])
 
-#RE for Teflon files
-re_uttid = re.compile(r'(.*/)(.*)\.(.*$)')
-
-#RE for CMU-kids
+#RE for CMU-kids and speechocean762
 re_uttid_raw = re.compile(r'(.*)/(.*)\..*')
-max_batch = 16
 
+
+max_batch = 16
 
 
 ##essential for map fucntion to run with multiprocessing, otherwise deadlock, why?
@@ -103,8 +101,10 @@ def read_trans(tran_path):
         ##to mark different phonemes: e.g "T" in " went to"
         for line in ifile:
             line = line.strip()
-            uttid, sent = line.split(' ')[0], line.split(' ')[1:]
-            tran_map.update({uttid: (' '.join(sent)).lower()})
+            fields = line.split('\t')
+            assert len(fields) == 2
+            uttid, sent = fields[0], fields[1]
+            tran_map.update({uttid: sent.lower()})
     return tran_map
 
 ##return a list of phoneme masks for each phoneme, before and after scaled by mask_ratio
@@ -170,6 +170,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         amount = num_phonemes * duration_mel
         max_batch_new = int(num_phonemes*(25000/amount))
     else:
+        ##dynamic batch_size
         amount = num_phonemes * duration_mel
         max_batch_new = int(num_phonemes*(25000/amount))
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
@@ -202,7 +203,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut_fullutt( **input_kwargs)
+        gop_temp, gop_diff_temp = model.compute_prob_hut_mask( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -261,8 +262,8 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
         ds_map = ds.map(map_to_array, remove_columns=["audio"], batched=True, batch_size=100)
         ds_filtered = ds_map.filter(lambda batch: [ item is not None for item in batch['tokens']], batched=True, batch_size=100, num_proc=10)
         ds_filtered.save_to_disk(cache_full_path)
-        
     ds_filtered = datasets.Dataset.load_from_disk(cache_full_path)
+    ds_filtered = ds_filtered.filter(lambda batch: [ item in uttid_list for item in batch['id']], batched=True, batch_size=100, num_proc=10)
     if subset is not None:
         ds_filtered = ds_filtered.filter(lambda batch: [ item in subset for item in batch['id']], batched=True, batch_size=100, num_proc=10)
     if last is not None:
@@ -311,15 +312,14 @@ def batch_process(batch, device, out_path=None):
         param.requires_grad = False   
     ##mdd parameters:
     cfg_strength_gop=2
-    #diff_symbol = None
+    diff_symbol = None
     #diff_symbol="p"
-    diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
-    #diff_symbol="a farmer walked through a field"
+    #diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
     masking_ratio=1.5
-    steps=16
+    steps=8
     n_samples=10
-    #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    sway_sampling_coef = None
+    #sway_sampling_coef = -1
     remove_first_t_back = False
     #use_null_diff =True
     use_null_diff =False
@@ -391,24 +391,19 @@ if __name__ == "__main__":
     ctm_dict = read_ctm(sys.argv[5])
     uttid_list = list(ctm_dict.keys())
     dur_list = read_dur(sys.argv[6])
-    subset_list = [ uttid for uttid, dur in dur_list if dur < 6 ]
+    #subset_list = [ uttid for uttid, dur in dur_list ]
+    #subset_list = [ uttid for uttid, dur in dur_list if dur < 6 ]
+    subset_list =None
     csv_path = Path(sys.argv[3])
     
     out_path = sys.argv[7]
-    #last_utt = "facs2av2"
-    #last_utt = "fabm2ci1"
-    #last_utt = "fadf1ab2"
-    #last_utt = "fabm2ar2"
-    #last_utt="fabm2dt1"
-    #last_utt = "flas1cn2"
-    #last_utt = "fabm2ad2"
-    last_utt = "fejm2aq2"
+    last_utt = None
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):
         os.makedirs(new_folder)
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, subset=subset_list, last=last_utt)
+    ds= load_dataset_local_from_dict(csv_path, "speechocean762", trans_map, uttid_list, subset=subset_list, last=last_utt)
     # ds could be loaded from disk, need to move the tensors to device 
     #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "model":model, "device":device, "out_path":out_path}, num_proc=2) 
     ds.map(batch_process, fn_kwargs={"device":device, "out_path":out_path}, batched=True, batch_size=50, num_proc=1)

@@ -170,8 +170,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         amount = num_phonemes * duration_mel
         max_batch_new = int(num_phonemes*(25000/amount))
     else:
-        amount = num_phonemes * duration_mel
-        max_batch_new = int(num_phonemes*(25000/amount))
+        max_batch_new = 128
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
     # if res <= 0.5 * max_batch_new:
     #     iter_num = quo if quo > 0 else 1
@@ -202,7 +201,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut_fullutt( **input_kwargs)
+        gop_temp, gop_diff_temp = model.compute_prob_hut_fix( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -311,15 +310,14 @@ def batch_process(batch, device, out_path=None):
         param.requires_grad = False   
     ##mdd parameters:
     cfg_strength_gop=2
-    #diff_symbol = None
+    diff_symbol = None
     #diff_symbol="p"
-    diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
-    #diff_symbol="a farmer walked through a field"
-    masking_ratio=1.5
-    steps=16
+    #diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
+    masking_ratio=1
+    steps=4
     n_samples=10
-    #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    sway_sampling_coef = None
+    #sway_sampling_coef = -1
     remove_first_t_back = False
     #use_null_diff =True
     use_null_diff =False
@@ -402,7 +400,7 @@ if __name__ == "__main__":
     #last_utt="fabm2dt1"
     #last_utt = "flas1cn2"
     #last_utt = "fabm2ad2"
-    last_utt = "fejm2aq2"
+    last_utt = None
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):
