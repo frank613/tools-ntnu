@@ -157,7 +157,7 @@ def resol_conversion_duration(pid_seq, dur_target):
     
  
 ### non-batch version
-def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio=1, sway_sampling_coef=-1, steps=32, n_samples=5):
+def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio=1, sway_sampling_coef=-1, steps=32, n_samples=5, remove_first_t_back=False, use_null_diff=False):
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
@@ -185,6 +185,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         if b_size == 0:
             continue
         phoneme_mask_in = phoneme_mask_list[count:count+b_size]
+        phoneme_mask_list_orig_in = phoneme_mask_list_orig[count:count+b_size]
         input_kwargs = dict(
                     mel_target=[cond] * b_size,
                     text=[text_in] * b_size, 
@@ -192,12 +193,15 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     steps = steps,
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
-                    diff_symbol = diff_symbol,
+                    phoneme_mask_list_orig = phoneme_mask_list_orig_in,
+                    diff_symbol = diff_symbol if diff_symbol is None else diff_symbol * b_size,
                     sway_sampling_coef = sway_sampling_coef,
-                    n_samples = n_samples,           
+                    n_samples = n_samples,
+                    remove_first_t_back = remove_first_t_back,
+                    use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut( **input_kwargs)
+        gop_temp, gop_diff_temp = model.compute_prob_hut_mask( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -305,16 +309,23 @@ def batch_process(batch, device, out_path=None):
     for param in model.parameters():
         param.requires_grad = False   
     ##mdd parameters:
-    cfg_strength_gop=0
-    #diff_symbol=" "
-    diff_symbol=None
-    masking_ratio=1
-    steps=16
-    n_samples=5
-    #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    cfg_strength_gop=2.5
+    diff_symbol = None
+    #diff_symbol="p"
+    #diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
+    masking_ratio=1.0
+    steps=4
+    n_samples=10
+    sway_sampling_coef = None
+    #sway_sampling_coef = -1
+    remove_first_t_back = False
+    #use_null_diff =True
+    use_null_diff =False
     
-    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
+    if tokenizer == "pinyin" and diff_symbol is not None:
+        diff_symbol = convert_char_to_pinyin([diff_symbol])
+    
+    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}, remove_first_t_back={remove_first_t_back}")
     #We need training mode because ODE?
     #model.eval()
     proc_id = str(os.getpid())
@@ -326,7 +337,7 @@ def batch_process(batch, device, out_path=None):
             pid_seq = ctm_dict[uid]
             tokens = batch["tokens"][i]
             mel = torch.tensor(batch["mel"][i], device=device, dtype=dtype)
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples)       
+            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
             assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')
@@ -355,7 +366,6 @@ if __name__ == "__main__":
     frames_per_second = target_sample_rate // hop_length
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
-    pdb.set_trace()
 
     if model_cfg.model.tokenizer_path is not None or tokenizer != "pinyin":
         sys.exit("check the tokenizer and vocab path")
@@ -389,6 +399,7 @@ if __name__ == "__main__":
     #last_utt = "fabm2ar2"
     #last_utt="fabm2dt1"
     #last_utt = "flas1cn2"
+    #last_utt = "fabm2ad2"
     last_utt = None
     
     new_folder = os.path.dirname(out_path)

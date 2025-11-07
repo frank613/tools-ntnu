@@ -1,0 +1,5 @@
+export CUDA_VISIBLE_DEVICES=5
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+accelerate launch finetune_sent.py ./models/F5TTS_v1_Base/ ./f5_tts/configs/F5TTS_v1_Base.yaml ./data-for-F5/libri/train-clean-100/ ./data-for-F5/libri/dev-clean/
+
+accelerate launch --config_file ~/.cache/huggingface/accelerate/default_config.yaml finetune_sent.py ./models/F5TTS_v1_Base/ ./f5_tts/configs/F5TTS_v1_Base.yaml ./data-for-F5/libri/train-clean-100/ ./data-for-F5/libri/dev-clean/

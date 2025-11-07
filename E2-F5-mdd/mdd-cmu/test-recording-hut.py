@@ -108,7 +108,7 @@ def read_trans(tran_path):
     return tran_map
 
 ##return a list of phoneme masks for each phoneme, before and after scaled by mask_ratio
-def mdd_mask( pid_seq, mask_ratio, device):
+def mdd_mask( pid_seq, mask_ratio, mask_all, device):
     length = pid_seq[-1][-1]
     mask_list = []
     mask_list_orig = []
@@ -125,6 +125,12 @@ def mdd_mask( pid_seq, mask_ratio, device):
         mask_orig[l_orig:r_orig] = False
         mask_list.append(mask)
         mask_list_orig.append(mask_orig)
+    
+    if mask_all:
+        mask_list = [ torch.zeros_like(mask, dtype=torch.bool, device=device ) for mask in mask_list]
+        ## mask_list_orig needs to be kept for eavalting the GOP in the segment
+        #mask_list_orig = [ torch.zeros_like(mask, dtype=torch.bool, device=device ) for mask in mask_list_orig]
+        
     return mask_list, mask_list_orig
 
 def read_dur(dur_path):
@@ -154,15 +160,23 @@ def resol_conversion_duration(pid_seq, dur_target):
         start = frame_e - 1  ### -1 for covering a wider range of code in case of phoneme state transition 
     assert pid_seq_ret[-1][-1] == dur_target
     return pid_seq_ret
-    
+
+##return gop_list, gop_diff_list, 1D-list NumP 
+def compute_gop(out_probs, out_probs_diff, phoneme_mask_list):
+    assert len(out_probs.shape) == 2 ## 2D tensor, B x NumFrame
+    np = out_probs.shape[0]
+    gop_list = [ out_probs[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
+    gop_list_diff = [ out_probs_diff[i][~mask].mean().item() for i, mask in zip(range(np), phoneme_mask_list)]
+    gop_list_diff = [ gop - gop_diff for gop, gop_diff in zip(gop_list, gop_list_diff)]
+    return gop_list, gop_list_diff
  
 ### non-batch version
-def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio=1, sway_sampling_coef=-1, steps=32, n_samples=5):
+def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, mask_all=False, masking_ratio=1, sway_sampling_coef=-1, steps=32, n_samples=5, full_utt=False, compute_prob_exact=False):
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
     assert masking_ratio >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
-    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
+    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, mask_all, device)
     num_phonemes = len(pid_seq)
 
     if cfg_strength_gop != 0:
@@ -185,6 +199,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         if b_size == 0:
             continue
         phoneme_mask_in = phoneme_mask_list[count:count+b_size]
+        phoneme_mask_list_orig_in = phoneme_mask_list_orig[count:count+b_size]
         input_kwargs = dict(
                     mel_target=[cond] * b_size,
                     text=[text_in] * b_size, 
@@ -192,19 +207,34 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     steps = steps,
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
+                    phoneme_mask_list_orig = phoneme_mask_in if mask_all else phoneme_mask_list_orig_in,
                     diff_symbol = diff_symbol,
                     sway_sampling_coef = sway_sampling_coef,
                     n_samples = n_samples,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut( **input_kwargs)
+        if not full_utt:
+            if not compute_prob_exact:
+                gop_temp, gop_diff_temp = model.compute_prob_hut_mask( **input_kwargs)
+            else:
+                input_kwargs.pop("phoneme_mask_list_orig")
+                input_kwargs.pop("n_samples")
+                input_kwargs["t_inerval"] = 128
+                #gop_temp, gop_diff_temp = model.compute_prob( **input_kwargs)
+                gop_temp, gop_diff_temp = model.compute_prob_plot( **input_kwargs)   
+        else:
+            gop_temp, gop_diff_temp = model.compute_prob_hut_fullutt( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
         count += b_size          
     ##return gop_list, gop_diff_list, 1D-list NumP 
-    gop_diff = gop - gop_diff
-    return gop.tolist(), gop_diff.tolist()
+    if compute_prob_exact:
+        gop, gop_diff = compute_gop(gop, gop_diff, phoneme_mask_list_orig)
+        return  gop, gop_diff
+    else:
+        gop_diff = gop - gop_diff
+        return gop.tolist(), gop_diff.tolist()
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -298,47 +328,45 @@ def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_li
 #             f.write("%d %s %s\n"%(i, p_tokenizer._convert_id_to_token(int(pid_seq[i][0])), gop))
 #         f.write("\n")
 
-def batch_process(batch, device, out_path=None):
+def batch_process(uid, text, mel, pid_seq, device):
     model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
     dtype = next(model.parameters()).dtype
+    mel = mel.to(dtype=dtype)
     ###to save memory for MDD
     for param in model.parameters():
         param.requires_grad = False   
     ##mdd parameters:
     cfg_strength_gop=0
-    #diff_symbol=" "
+    #diff_symbol="p"
     diff_symbol=None
+    mask_all = False
     masking_ratio=1
-    steps=16
-    n_samples=5
-    #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    steps=4
+    n_samples=10
+    sway_sampling_coef = None
+    full_utt = False
+    compute_prob_exact = True
+    #sway_sampling_coef = -1
     
-    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
+    print(f"Using full_utt={full_utt}, mask_all={mask_all}, cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
     #We need training mode because ODE?
     #model.eval()
-    proc_id = str(os.getpid())
-    with torch.no_grad(), open(out_path+"_"+proc_id+".gop", "a") as f:
-        for i,uid in enumerate(batch["id"]):
-            # if uid != "fkmn1cu2":
-            #     continue
-            print("processing {0}".format(uid))    
-            pid_seq = ctm_dict[uid]
-            tokens = batch["tokens"][i]
-            mel = torch.tensor(batch["mel"][i], device=device, dtype=dtype)
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples)       
-            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
-            ### write files      
-            f.write(uid+'\n')
-            for i, (gop, gop_diff) in enumerate(zip(gop_list ,gop_diff_list)):
-                f.write("%d %s %s %s\n"%(i, pid_seq[i][0], gop, gop_diff))
-            f.write("\n")
+    with torch.no_grad():
+        print("processing {0}".format(uid))    
+        gop_list, gop_diff_list = get_avg_posterior(model, text, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, mask_all=mask_all, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, full_utt=full_utt, compute_prob_exact=compute_prob_exact)       
+        assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
+        print(gop_list, gop_diff_list)
+        ### write files      
+        # f.write(uid+'\n')
+        # for i, (gop, gop_diff) in enumerate(zip(gop_list ,gop_diff_list)):
+        #     f.write("%d %s %s %s\n"%(i, pid_seq[i][0], gop, gop_diff))
+        # f.write("\n")
     
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 8:
-        sys.exit("this script takes 7 arguments <model-path> <model-config-yaml-path> <in-audio-csv-folder> <in-raw-text-file> <CTM-alignment-file> <utt2dur> <out-gop-path> \n \
+    if len(sys.argv) != 4:
+        sys.exit("this script takes 3 arguments <model-path> <model-config-yaml-path> <in-audio-wav-file> \n \
         , it loads the TTS model and compute the GOP")
     
     ## load model config       
@@ -355,7 +383,6 @@ if __name__ == "__main__":
     frames_per_second = target_sample_rate // hop_length
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
-    pdb.set_trace()
 
     if model_cfg.model.tokenizer_path is not None or tokenizer != "pinyin":
         sys.exit("check the tokenizer and vocab path")
@@ -375,28 +402,43 @@ if __name__ == "__main__":
     #     vocoder = load_vocoder(vocoder_name=mel_spec_type, is_local=False, hf_cache_dir=vocoder_local_path, device=device)
              
     ##load alignment and transcription
-    trans_map = read_trans(sys.argv[4])
-    ctm_dict = read_ctm(sys.argv[5])
-    uttid_list = list(ctm_dict.keys())
-    dur_list = read_dur(sys.argv[6])
-    subset_list = [ uttid for uttid, dur in dur_list if dur < 6 ]
-    csv_path = Path(sys.argv[3])
+    #ctm_dict = read_ctm(sys.argv[4])
+    #pdb.set_trace()
     
-    out_path = sys.argv[7]
-    #last_utt = "facs2av2"
-    #last_utt = "fabm2ci1"
-    #last_utt = "fadf1ab2"
-    #last_utt = "fabm2ar2"
-    #last_utt="fabm2dt1"
-    #last_utt = "flas1cn2"
-    last_utt = None
+ 
+    ## mask and gen
+    audio_in_path = Path(sys.argv[3])
+    trans = "cat."
+    #trans = "illness."
+    cond = get_audio(audio_in_path, target_rms, target_sample_rate, device)
+    duration_mel = math.ceil(cond.shape[-1] / hop_length)
     
-    new_folder = os.path.dirname(out_path)
-    if not os.path.exists(new_folder):
-        os.makedirs(new_folder)
+    mel_spec_kwargs=dict(
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length,
+        n_mel_channels=n_mel_channels,
+        target_sample_rate=target_sample_rate,
+        mel_spec_type=mel_spec_type,
+    )
+    mel_spec = MelSpec(**mel_spec_kwargs)
+    mel = mel_spec(cond)
+    mel = mel.permute(0, 2, 1).squeeze()
+    #pid_seq_sec = [['SIL', 0.0, 0.1], ['K', 0.1, 0.2], ['AE', 0.2, 0.8], ['T', 0.8, 0.9], ['SIL', 0.9, 1]]
+    #cat
+    pid_seq_sec = [['SIL', 0.0, 0.1], ['K', 0.1, 0.29], ['AE', 0.29, 0.5], ['T', 0.5, 0.9], ['SIL', 0.9, 1]]
+    #cit	
+    #pid_seq_sec = [['SIL', 0.0, 0.1], ['K', 0.1, 0.46], ['AE', 0.46, 0.6], ['T', 0.6, 0.9], ['SIL', 0.9, 1]]
+    #cot
+    #pid_seq_sec = [['SIL', 0.0, 0.1], ['K', 0.1, 0.43], ['AE', 0.43, 0.6], ['T', 0.6, 0.9], ['SIL', 0.9, 1]]
+    
+    batch_process(trans, trans, mel, pid_seq_sec, device)
+    # new_folder = os.path.dirname(out_path)
+    # if not os.path.exists(new_folder):
+    #     os.makedirs(new_folder)
     # load dataset and read soundfiles
-    ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, subset=subset_list, last=last_utt)
+    #ds= load_dataset_local_from_dict(csv_path, "cmu-kids", trans_map, uttid_list, subset=subset_list, last=last_utt)
     # ds could be loaded from disk, need to move the tensors to device 
     #ds.map(single_process, fn_kwargs={"p_tokenizer":p_tokenizer, "model":model, "device":device, "out_path":out_path}, num_proc=2) 
-    ds.map(batch_process, fn_kwargs={"device":device, "out_path":out_path}, batched=True, batch_size=50, num_proc=1)
+    #ds.map(batch_process, fn_kwargs={"device":device}, batched=True, batch_size=1, num_proc=1)
     

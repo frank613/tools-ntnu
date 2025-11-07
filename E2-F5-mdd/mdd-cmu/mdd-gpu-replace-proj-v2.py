@@ -303,7 +303,7 @@ def batch_process(batch, device, out_path=None):
     model = load_model_mdd( model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
     dtype = next(model.parameters()).dtype
     ##mdd parameters:
-    cfg_strength_gop=2
+    cfg_strength_gop=0
     #diff_symbol=" "
     #diff_symbol=None
     diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"

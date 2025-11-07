@@ -127,6 +127,27 @@ def mdd_mask( pid_seq, mask_ratio, device):
         mask_list_orig.append(mask_orig)
     return mask_list, mask_list_orig
 
+##return a list of phoneme masks for each phoneme, before and after scaled by mask_ratio
+def mdd_mask_avg( pid_seq, mask_ratio_min, avg_len, ratio_avg, device):  
+    length = pid_seq[-1][-1]
+    mask_list = []
+    mask_list_orig = []
+    for index in range(len(pid_seq)):
+        mask = torch.full((length,), True, dtype=torch.bool, device=device )
+        mask_orig = torch.full((length,), True, dtype=torch.bool, device=device )
+        pid, l_orig, r_orig = pid_seq[index]
+        mask_ratio = max(ratio_avg*avg_len/(r_orig-l_orig), mask_ratio_min)
+        if mask_ratio < 1:
+            sys.exit("mask_ratio must greater than 1") 
+        extend = (r_orig-l_orig) * (mask_ratio - 1) / 2
+        l = math.floor(l_orig - extend) if l_orig - extend >= 0 else 0
+        r = math.ceil(r_orig + extend) if r_orig + extend <= length else length
+        mask[l:r] = False ## False == masked!
+        mask_orig[l_orig:r_orig] = False
+        mask_list.append(mask)
+        mask_list_orig.append(mask_orig)
+    return mask_list, mask_list_orig
+
 def read_dur(dur_path):
     dur_list = []
     with open(dur_path, "r") as ifile:
@@ -157,20 +178,23 @@ def resol_conversion_duration(pid_seq, dur_target):
     
  
 ### non-batch version
-def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio=1, sway_sampling_coef=-1, steps=32, n_samples=5):
+def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio_min=1, ratio_avg=1, sway_sampling_coef=-1, steps=32, n_samples=5, remove_first_t_back=False, use_null_diff=False):
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
-    assert masking_ratio >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
-    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
+    assert masking_ratio_min >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
+    #phoneme_mask_list, phoneme_mask_list_orig = mdd_mask(pid_seq, masking_ratio, device)
+    avg_len = math.ceil(duration_mel/len(pid_seq))
+    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask_avg(pid_seq, masking_ratio_min, avg_len, ratio_avg, device)
     num_phonemes = len(pid_seq)
 
     if cfg_strength_gop != 0:
         ##dynamic batch_size
         amount = num_phonemes * duration_mel
-        max_batch_new = int(num_phonemes*(25000/amount))
+        max_batch_new = int(num_phonemes*(20000/amount))
     else:
-        max_batch_new = 128
+        amount = num_phonemes * duration_mel
+        max_batch_new = int(num_phonemes*(20000/amount))
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
     # if res <= 0.5 * max_batch_new:
     #     iter_num = quo if quo > 0 else 1
@@ -185,6 +209,7 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         if b_size == 0:
             continue
         phoneme_mask_in = phoneme_mask_list[count:count+b_size]
+        phoneme_mask_list_orig_in = phoneme_mask_list_orig[count:count+b_size]
         input_kwargs = dict(
                     mel_target=[cond] * b_size,
                     text=[text_in] * b_size, 
@@ -192,12 +217,15 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     steps = steps,
                     cfg_strength = cfg_strength_gop,
                     phoneme_mask_list = phoneme_mask_in,
-                    diff_symbol = diff_symbol,
+                    phoneme_mask_list_orig = phoneme_mask_list_orig_in,
+                    diff_symbol = diff_symbol if diff_symbol is None else diff_symbol * b_size,
                     sway_sampling_coef = sway_sampling_coef,
-                    n_samples = n_samples,           
+                    n_samples = n_samples,
+                    remove_first_t_back = remove_first_t_back,
+                    use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut( **input_kwargs)
+        gop_temp, gop_diff_temp = model.compute_prob_hut_fullutt( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_diff = torch.concat((gop_diff,gop_diff_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
@@ -306,15 +334,24 @@ def batch_process(batch, device, out_path=None):
         param.requires_grad = False   
     ##mdd parameters:
     cfg_strength_gop=0
-    #diff_symbol=" "
-    diff_symbol=None
-    masking_ratio=1
-    steps=16
-    n_samples=5
-    #sway_sampling_coef = None
-    sway_sampling_coef = -1
+    #diff_symbol = None
+    #diff_symbol="p"
+    diff_symbol="只"
+    #diff_symbol="a farmer walked through a field"
+    masking_ratio_min=1.1
+    ratio_avg = 2
+    steps=8
+    n_samples=10
+    sway_sampling_coef = None
+    #sway_sampling_coef = -1
+    remove_first_t_back = False
+    #use_null_diff =True
+    use_null_diff =False
     
-    print(f"Using cfg={cfg_strength_gop}, mr={masking_ratio}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}")
+    if tokenizer == "pinyin" and diff_symbol is not None:
+        diff_symbol = convert_char_to_pinyin([diff_symbol])
+    
+    print(f"Using cfg={cfg_strength_gop}, ratio_avg={ratio_avg}, steps={steps}, sway={sway_sampling_coef}, diff={diff_symbol}, remove_first_t_back={remove_first_t_back}")
     #We need training mode because ODE?
     #model.eval()
     proc_id = str(os.getpid())
@@ -326,7 +363,9 @@ def batch_process(batch, device, out_path=None):
             pid_seq = ctm_dict[uid]
             tokens = batch["tokens"][i]
             mel = torch.tensor(batch["mel"][i], device=device, dtype=dtype)
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio=masking_ratio, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples)       
+            assert len(diff_symbol)== 1
+            diff_symbol_in = [(diff_symbol[0]*len(pid_seq))+[" "]]
+            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol_in, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
             assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')
@@ -355,7 +394,6 @@ if __name__ == "__main__":
     frames_per_second = target_sample_rate // hop_length
     #load vocab and tokenizer
     tokenizer = model_cfg.model.tokenizer
-    pdb.set_trace()
 
     if model_cfg.model.tokenizer_path is not None or tokenizer != "pinyin":
         sys.exit("check the tokenizer and vocab path")
@@ -389,7 +427,8 @@ if __name__ == "__main__":
     #last_utt = "fabm2ar2"
     #last_utt="fabm2dt1"
     #last_utt = "flas1cn2"
-    last_utt = None
+    #last_utt = "fabm2ad2"
+    last_utt = "msjd2ae1"
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

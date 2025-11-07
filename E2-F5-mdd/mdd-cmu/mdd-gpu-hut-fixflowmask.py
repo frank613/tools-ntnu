@@ -170,7 +170,9 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         amount = num_phonemes * duration_mel
         max_batch_new = int(num_phonemes*(25000/amount))
     else:
-        max_batch_new = 128
+        ##dynamic batch_size
+        amount = num_phonemes * duration_mel
+        max_batch_new = int(num_phonemes*(25000/amount))
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
     # if res <= 0.5 * max_batch_new:
     #     iter_num = quo if quo > 0 else 1
@@ -309,13 +311,13 @@ def batch_process(batch, device, out_path=None):
     for param in model.parameters():
         param.requires_grad = False   
     ##mdd parameters:
-    cfg_strength_gop=2
+    cfg_strength_gop=0
     diff_symbol = None
     #diff_symbol="p"
     #diff_symbol="只只只只只只只只只只只只只只只只只只只只只只只只只"
     masking_ratio=1
-    steps=4
-    n_samples=10
+    steps=8
+    n_samples=5
     sway_sampling_coef = None
     #sway_sampling_coef = -1
     remove_first_t_back = False
