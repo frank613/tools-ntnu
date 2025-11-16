@@ -162,7 +162,8 @@ def readTRANToDF(tran_file):
     df = pd.DataFrame(columns=('uttid', 'seq'))
     for line in in_file:
         uttid,seq = line.split()
-        df.loc[len(df.index)] = [uttid, seq.split(';')]
+        seq_filtered = [ item for item in seq.split(';') if item not in exclude_token_tran]
+        df.loc[len(df.index)] = [uttid, seq_filtered]
     return df
 
 

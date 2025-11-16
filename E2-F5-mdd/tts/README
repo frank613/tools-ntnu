@@ -2,3 +2,5 @@ export CUDA_VISIBLE_DEVICES=5
 python tts-single-masked-generation.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ../prep/audio-cmu/all-spkr/fabm/fabm2aa1.wav ../prep/transcriptions-cmu/sentence.txt ../prep/transcriptions-cmu/cmu.ctm ./out-masked/fabm2aa1
 
 python tts-custom-generation_en.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml  ./wav-users/Xinwei_slow.wav ./out-tts/
+
+python tts-single-masked-generation-so.py ./F5_model/F5TTS_v1_Base ./f5_tts/configs/F5TTS_v1_Base.yaml ../prep-so/audio-so/all-spkr/SPEAKER0001/000010113.wav ../prep-so/transcriptions-so/sentence_all.txt ../prep-so/transcriptions-so/so_train.ctm ./out-so/masked/00010113-mr15/out

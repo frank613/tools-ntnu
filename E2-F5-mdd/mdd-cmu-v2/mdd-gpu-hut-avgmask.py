@@ -334,9 +334,9 @@ def batch_process(batch, device, out_path=None):
         param.requires_grad = False   
     ##mdd parameters:
     cfg_strength_gop=0
-    #diff_symbol = None
+    diff_symbol = None
     #diff_symbol="p"
-    diff_symbol="只"
+    #diff_symbol="只"
     #diff_symbol="a farmer walked through a field"
     masking_ratio_min=1.1
     ratio_avg = 2
@@ -363,9 +363,11 @@ def batch_process(batch, device, out_path=None):
             pid_seq = ctm_dict[uid]
             tokens = batch["tokens"][i]
             mel = torch.tensor(batch["mel"][i], device=device, dtype=dtype)
-            assert len(diff_symbol)== 1
-            diff_symbol_in = [(diff_symbol[0]*len(pid_seq))+[" "]]
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol_in, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
+            #assert len(diff_symbol)== 1
+            if diff_symbol is not None:
+                assert len(diff_symbol)== 1
+                diff_symbol = [(diff_symbol[0]*len(pid_seq))+[" "]]
+            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
             assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
             ### write files      
             f.write(uid+'\n')
@@ -397,10 +399,11 @@ if __name__ == "__main__":
 
     if model_cfg.model.tokenizer_path is not None or tokenizer != "pinyin":
         sys.exit("check the tokenizer and vocab path")
-    vocab_path = f"{sys.argv[1]}/vocab.txt"
     
+    vocab_path = os.path.dirname(sys.argv[1]) + "/vocab.txt" 
     ## load model
-    model_path = f"{sys.argv[1]}/model_1250000.safetensors"
+    #model_path = f"{sys.argv[1]}/model_1250000.safetensors"
+    model_path = sys.argv[1]
     model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
     model_arc = model_cfg.model.arch    
     model_name = model_cfg.model.name

@@ -40,7 +40,7 @@ def deal_with_audio_dir(audio_dir):
         if duration < 0.4 or duration > 20:
             continue
         #sub_result.append({"audio_path": str(line), "text": text, "duration": duration, "uid":uid})
-        sub_result.append({"audio_path": str(line), "text": text, "duration": duration})
+        sub_result.append({"audio_path": str(line), "text": text, "duration": duration, "uid":uid})
         durations.append(duration)
         vocab_set.update(list(text))
     return sub_result, durations, vocab_set

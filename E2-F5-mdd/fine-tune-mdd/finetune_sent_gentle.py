@@ -5,7 +5,7 @@ from importlib.resources import files
 
 from cached_path import cached_path
 
-from f5_tts.model import CFM_MDD, UNetT, DiT, Trainer_MDD
+from f5_tts.model import CFM_MDD, UNetT, DiT, Trainer_MDD_Gentle
 from f5_tts.model.utils import get_tokenizer
 from f5_tts.model.dataset import load_dataset
 from hydra.utils import get_class
@@ -53,12 +53,13 @@ def main():
         vocab_char_map=vocab_char_map,
     )
     
-    trainer = Trainer_MDD(
+    trainer = Trainer_MDD_Gentle(
         model,
         epochs=2,
-        learning_rate=model_cfg.optim.learning_rate,
-        num_warmup_updates=2000,
-        save_per_updates=100,
+        #learning_rate=model_cfg.optim.learning_rate,
+        learning_rate=1e-5,
+        num_warmup_updates=1500,
+        save_per_updates=200,
         keep_last_n_checkpoints=-1,
         checkpoint_path=checkpoint_path,
         batch_size_per_gpu=3500,
@@ -73,8 +74,8 @@ def main():
         log_samples=True,
         last_per_updates=5000,
         bnb_optimizer=bnb_optimizer,
-        text_loss_weight=0.1,  
-        mask_len_avg=20,         
+        text_loss_weight=0.05,  
+        mask_len_avg=30,         
     )
     ##load libripssech datasets? validation set how to add?
     train_dataset = load_dataset(train_path, dataset_type="CustomDatasetPath", mel_spec_kwargs=mel_spec_kwargs)
@@ -83,7 +84,7 @@ def main():
     trainer.train(
         train_dataset,
         val_dataset,
-        resumable_with_seed=666,  # seed for shuffling dataset
+        resumable_with_seed=1,  # seed for shuffling dataset
     )
 
 

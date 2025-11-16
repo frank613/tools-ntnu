@@ -5,7 +5,7 @@ from importlib.resources import files
 
 from cached_path import cached_path
 
-from f5_tts.model import CFM_MDD, UNetT, DiT, Trainer_MDD
+from f5_tts.model import CFM_MDD, UNetT, DiT, Trainer_MDD_word
 from f5_tts.model.utils import get_tokenizer
 from f5_tts.model.dataset import load_dataset
 from hydra.utils import get_class
@@ -31,6 +31,28 @@ from f5_tts.infer.utils_infer import (
     remove_silence_for_generated_wav,
 )
 
+def read_word_ctm(ctm_path, tokenizer=None):
+    ret_dict = {}
+    word_list = []
+    cur_uttid = None
+    with open(ctm_path, "r") as ifile:
+        for line in ifile:
+            line = line.strip()
+            fields = line.split(' ')
+            assert len(fields) == 5
+            uttid, start, end, word = fields[0], float(fields[2]), float(fields[2]) + float(fields[3]), fields[4]
+            #uttid = uttid.strip("lbi-")
+            #pid = tokenizer._convert_token_to_id(phoneme)
+            if uttid != cur_uttid and cur_uttid is not None:
+                ret_dict.update({cur_uttid: word_list})
+                word_list = []
+            cur_uttid = uttid           
+            #phone_list.append([pid, start, end])  
+            word_list.append([word.lower(), start, end])           
+        if not cur_uttid in ret_dict:
+            ret_dict.update({cur_uttid: word_list})
+    return ret_dict
+
 def main():
     ##load pretrained model
     #model = load_model_mdd(model_cls, model_arc, model_path, mel_spec_type=mel_spec_type, vocab_file=vocab_path, device=device, use_ema=True)
@@ -53,7 +75,7 @@ def main():
         vocab_char_map=vocab_char_map,
     )
     
-    trainer = Trainer_MDD(
+    trainer = Trainer_MDD_word(
         model,
         epochs=2,
         learning_rate=model_cfg.optim.learning_rate,
@@ -73,8 +95,8 @@ def main():
         log_samples=True,
         last_per_updates=5000,
         bnb_optimizer=bnb_optimizer,
-        text_loss_weight=0.1,  
-        mask_len_avg=20,         
+        text_loss_weight=0.5,  
+        ctm_dict=ctm_dict,         
     )
     ##load libripssech datasets? validation set how to add?
     train_dataset = load_dataset(train_path, dataset_type="CustomDatasetPath", mel_spec_kwargs=mel_spec_kwargs)
@@ -90,8 +112,8 @@ def main():
 if __name__ == "__main__":
 
     print(sys.argv)
-    if len(sys.argv) != 5:
-        sys.exit("this script takes 4 arguments <model-path> <model-config-yaml-path> <training-dataset-path> <dev-dataset-path> \n \
+    if len(sys.argv) != 6:
+        sys.exit("this script takes 5 arguments <model-path> <model-config-yaml-path> <word-ctm-file> <training-dataset-path> <dev-dataset-path> \n \
         , it loads the TTS model and compute the GOP")
     
     ## load model config       
@@ -119,8 +141,10 @@ if __name__ == "__main__":
     model_name = model_cfg.model.name
     print(f"Using {model_name}...")
     
-    train_path = sys.argv[3]
-    dev_path = sys.argv[4]    
+    ctm_dict = read_word_ctm(sys.argv[3])
+    pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
+    train_path = sys.argv[4]
+    dev_path = sys.argv[5]    
     # import json
     # with open(f"{train_path}/duration.json", "r", encoding="utf-8") as f:
     #         data_dict = json.load(f)
