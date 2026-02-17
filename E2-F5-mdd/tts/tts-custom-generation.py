@@ -134,11 +134,12 @@ if __name__ == "__main__":
     #prepare input
     #If English punctuation marks the end of a sentence, 
     #make sure there is a space " " after it. Otherwise not regarded as when chunk.
-    ref_text = "I am Xinwei."
+    ref_text = "I am Xinwei. "
     #ref_text = "公司要倒闭了. 我要跑路了."
     #target_text = "我还可以说中文呢."
     #target_text = "你今天什么时候来上班"
-    target_text = "Make sure there is a space."
+    #target_text = "Make sure there is a space."
+    target_text = "cat."
     text_list = [ref_text+target_text]
     
     ## mask and gen

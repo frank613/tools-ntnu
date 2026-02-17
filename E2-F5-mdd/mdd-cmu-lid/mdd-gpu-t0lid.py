@@ -203,7 +203,9 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     iter_num = (num_phonemes) // max_batch_new + 1
     count = 0
     gop = torch.rand((0), device=device)
-    gop_diff = torch.rand((0), device=device)
+    gop_null = torch.rand((0), device=device)
+    radius = torch.rand((0), device=device)
+    radius_null = torch.rand((0), device=device)
     for i in range(iter_num):
         b_size = max_batch_new if i != iter_num-1 else num_phonemes-count
         if b_size == 0:
@@ -225,14 +227,16 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_diff_temp = model.compute_prob_hut_mask( **input_kwargs)
+        gop_temp, gop_null_temp, radius_temp, radius_null_temp = model.compute_prob_y0_sphere( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
-        gop_diff = torch.concat((gop_diff,gop_diff_temp))
+        gop_null = torch.concat((gop_null,gop_null_temp))
+        radius = torch.concat((radius,radius_temp))
+        radius_null = torch.concat((radius_null,radius_null_temp))
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
         count += b_size          
     ##return gop_list, gop_diff_list, 1D-list NumP 
-    gop_diff = gop - gop_diff
-    return gop.tolist(), gop_diff.tolist()
+    #gop_diff = gop - gop_diff
+    return gop.tolist(), gop_null.tolist(), radius.tolist(), radius_null.tolist()
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -335,13 +339,12 @@ def batch_process(batch, device, out_path=None):
     ##mdd parameters:
     cfg_strength_gop=0
     diff_symbol = None
-    #diff_symbol="p"
-    #diff_symbol="只"
-    #diff_symbol="a farmer walked through a field"
+    #diff_symbol = "I like to eat an apple"
+    #diff_symbol = "a scientist walked through a field"
     masking_ratio_min=1.1 
     #masking_ratio_min=1
-    ratio_avg = 2
-    steps=8
+    ratio_avg = 1.5
+    steps=32
     n_samples=10
     sway_sampling_coef = None
     #sway_sampling_coef = -1
@@ -367,13 +370,13 @@ def batch_process(batch, device, out_path=None):
             #assert len(diff_symbol)== 1
             if diff_symbol is not None:
                 assert len(diff_symbol)== 1
-                diff_symbol = [(diff_symbol[0]*len(pid_seq))+[" "]]
-            gop_list, gop_diff_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
-            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_diff_list)
+                #diff_symbol = (diff_symbol[0]*len(pid_seq))
+            gop_list, gop_null_list, radius_list, radius_null_list = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
+            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_null_list)
             ### write files      
             f.write(uid+'\n')
-            for i, (gop, gop_diff) in enumerate(zip(gop_list ,gop_diff_list)):
-                f.write("%d %s %s %s\n"%(i, pid_seq[i][0], gop, gop_diff))
+            for i, (gop, radius, gop_null, radius_null) in enumerate(zip(gop_list, radius_list, gop_null_list, radius_null_list)):
+                f.write("%d %s %s %s %s %s\n"%(i, pid_seq[i][0], gop, radius, gop_null, radius_null))
             f.write("\n")
     
 if __name__ == "__main__":
@@ -401,10 +404,10 @@ if __name__ == "__main__":
     if model_cfg.model.tokenizer_path is not None or tokenizer != "pinyin":
         sys.exit("check the tokenizer and vocab path")
     
-    vocab_path = os.path.dirname(sys.argv[1]) + "/vocab.txt" 
+    vocab_path = f"{sys.argv[1]}/vocab.txt"
     ## load model
     #model_path = f"{sys.argv[1]}/model_1250000.safetensors"
-    model_path = sys.argv[1]
+    model_path = f"{sys.argv[1]}/model_1250000.safetensors"
     model_cls = get_class(f"f5_tts.model.{model_cfg.model.backbone}")
     model_arc = model_cfg.model.arch    
     model_name = model_cfg.model.name

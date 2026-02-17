@@ -10,6 +10,7 @@ from f5_tts.model.utils import get_tokenizer
 from f5_tts.model.dataset import load_dataset
 from hydra.utils import get_class
 import pdb
+from torch.utils.data import Subset
 
 import sys
 from omegaconf import OmegaConf
@@ -41,7 +42,7 @@ def read_word_ctm(ctm_path, tokenizer=None):
             fields = line.split(' ')
             assert len(fields) == 5
             uttid, start, end, word = fields[0], float(fields[2]), float(fields[2]) + float(fields[3]), fields[4]
-            #uttid = uttid.strip("lbi-")
+            uttid = uttid.strip("lbi-")
             #pid = tokenizer._convert_token_to_id(phoneme)
             if uttid != cur_uttid and cur_uttid is not None:
                 ret_dict.update({cur_uttid: word_list})
@@ -77,10 +78,10 @@ def main():
     
     trainer = Trainer_MDD_word(
         model,
-        epochs=2,
-        learning_rate=model_cfg.optim.learning_rate,
-        num_warmup_updates=2000,
-        save_per_updates=100,
+        epochs=15,
+        learning_rate=2e-5,
+        num_warmup_updates=3000,
+        save_per_updates=500,
         keep_last_n_checkpoints=-1,
         checkpoint_path=checkpoint_path,
         batch_size_per_gpu=3500,
@@ -95,17 +96,20 @@ def main():
         log_samples=True,
         last_per_updates=5000,
         bnb_optimizer=bnb_optimizer,
-        text_loss_weight=0.5,  
+        text_loss_weight=0.1,  
         ctm_dict=ctm_dict,         
     )
     ##load libripssech datasets? validation set how to add?
-    train_dataset = load_dataset(train_path, dataset_type="CustomDatasetPath", mel_spec_kwargs=mel_spec_kwargs)
+    train_dataset = load_dataset(train_path, dataset_type="CustomDatasetPath", mel_spec_kwargs=mel_spec_kwargs, filter_list=ctm_dict.keys())
+    #indices_to_keep = [i for i, sample in enumerate(train_dataset) if sample['uid'] in ctm_dict]
+    #train_dataset = Subset(train_dataset, indices_to_keep)        
+    #train_dataset = train_dataset.filter(lambda example: example["uid"] in ctm_dict)
     val_dataset = load_dataset(dev_path, dataset_type="CustomDatasetPath", mel_spec_kwargs=mel_spec_kwargs)
 
     trainer.train(
         train_dataset,
         val_dataset,
-        resumable_with_seed=666,  # seed for shuffling dataset
+        resumable_with_seed=1,  # seed for shuffling dataset
     )
 
 
@@ -142,7 +146,6 @@ if __name__ == "__main__":
     print(f"Using {model_name}...")
     
     ctm_dict = read_word_ctm(sys.argv[3])
-    pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
     train_path = sys.argv[4]
     dev_path = sys.argv[5]    
     # import json
