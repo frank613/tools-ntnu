@@ -1,4 +1,5 @@
-from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE, FixedGridODESolverJACOBTRACE_Wrong, FixedGridODESolverDist, FixedGridODESolverAABB, FixedGridODESolverAABBFIX, FixedGridODESolverHut, FixedGridODESolverHutFull, FixedGridODESolverHutSO, FixedGridODESolverHutFix
+from .solvers import FixedGridODESolver, FixedGridODESolverJACOBTRACE, FixedGridODESolverJACOBTRACE_Wrong, FixedGridODESolverDist, FixedGridODESolverAABB, FixedGridODESolverAABBFIX, FixedGridODESolverHut, FixedGridODESolverHutFull, FixedGridODESolverHutSO, FixedGridODESolverHutFix, \
+     FixedGridODESolverLid, FixedGridODESolverLidFull, FixedGridODESolverLidEnergy, FixedGridODESolverLid832, FixedGridODESolverJACOBTRACE_TEST
 from .rk_common import rk4_alt_step_func, rk3_step_func, rk2_step_func
 from .misc import Perturb
 import pdb
@@ -13,6 +14,14 @@ class Euler(FixedGridODESolver):
 
 ##XINWEIL: for MDD
 class Euler_MDD(FixedGridODESolverJACOBTRACE):
+    order = 1
+
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+    
+##XINWEIL: for MDD
+class Euler_MDD_test(FixedGridODESolverJACOBTRACE_TEST):
     order = 1
 
     def _step_func(self, func, t0, dt, t1, y0):
@@ -49,6 +58,34 @@ class Euler_MDD_aabb_fix(FixedGridODESolverAABBFIX):
 
 ##XINWEIL: for MDD
 class Euler_MDD_Hut(FixedGridODESolverHut):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+    
+##XINWEIL: for MDD
+class Euler_MDD_Hut_Lid(FixedGridODESolverLid):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+
+##XINWEIL: for MDD
+class Euler_MDD_Hut_Lid_832(FixedGridODESolverLid832):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+
+##XINWEIL: for MDD
+class Euler_MDD_Hut_Lid_Full(FixedGridODESolverLidFull):
+    order = 1
+    def _step_func(self, func, t0, dt, t1, y0):
+        f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)
+        return dt * f0, f0
+    
+##XINWEIL: for MDD
+class Euler_MDD_Hut_Lid_Energy(FixedGridODESolverLidEnergy):
     order = 1
     def _step_func(self, func, t0, dt, t1, y0):
         f0 = func(t0, y0, perturb=Perturb.NEXT if self.perturb else Perturb.NONE)

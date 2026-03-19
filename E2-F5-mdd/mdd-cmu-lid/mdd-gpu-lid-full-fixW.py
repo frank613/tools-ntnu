@@ -148,6 +148,33 @@ def mdd_mask_avg( pid_seq, mask_ratio_min, avg_len, ratio_avg, device):
         mask_list_orig.append(mask_orig)
     return mask_list, mask_list_orig
 
+##return a list of phoneme masks for each phoneme, before and after scaled by mask_ratio
+def mdd_mask_fix( pid_seq, mask_ratio_min, avg_len, ratio_avg, device, neighbor_frame_num):  
+    length = pid_seq[-1][-1]
+    mask_list = []
+    mask_list_orig = []
+    for index in range(len(pid_seq)):
+        mask = torch.full((length,), True, dtype=torch.bool, device=device )
+        mask_orig = torch.full((length,), True, dtype=torch.bool, device=device )
+        pid, l_orig, r_orig = pid_seq[index]
+        mask_ratio = max(ratio_avg*avg_len/(r_orig-l_orig), mask_ratio_min)
+        #if mask_ratio < 1:
+        #    sys.exit("mask_ratio must greater than 1") 
+        extend = (r_orig-l_orig) * (mask_ratio - 1) / 2
+        l = math.floor(l_orig - extend) if l_orig - extend >= 0 else 0
+        r = math.ceil(r_orig + extend) if r_orig + extend <= length else length
+        mask[l:r] = False ## False == masked!
+        #using neighbor_frame_num for fixed jacobian size
+        mid = int((l_orig + r_orig)/2)
+        l_orig = mid - neighbor_frame_num
+        assert l_orig >= 0 
+        r_orig = mid + neighbor_frame_num
+        assert r_orig <= length
+        mask_orig[l_orig:r_orig+1] = False
+        mask_list.append(mask)
+        mask_list_orig.append(mask_orig)
+    return mask_list, mask_list_orig
+
 def read_dur(dur_path):
     dur_list = []
     with open(dur_path, "r") as ifile:
@@ -178,24 +205,24 @@ def resol_conversion_duration(pid_seq, dur_target):
     
  
 ### non-batch version
-def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio_min=1, ratio_avg=1, sway_sampling_coef=-1, steps=32, n_samples=5, remove_first_t_back=False, use_null_diff=False):
+def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_symbol=None, masking_ratio_min=1, ratio_avg=1, sway_sampling_coef=-1, steps=32, n_samples=5, remove_first_t_back=False, use_null_diff=False, neighbor_frame_num=1):
     assert cond.shape[-1] == model.num_channels
     duration_mel = cond.shape[-2]
     pid_seq = resol_conversion_duration(pid_seq, dur_target=duration_mel)
     #assert masking_ratio_min >= 1  ###in this version (ODE-solver) only the segment within the phoneme_mask_list are valid 
     avg_len = math.ceil(duration_mel/len(pid_seq))
-    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask_avg(pid_seq, masking_ratio_min, avg_len, ratio_avg, device)
+    phoneme_mask_list, phoneme_mask_list_orig = mdd_mask_fix(pid_seq, masking_ratio_min, avg_len, ratio_avg, device, neighbor_frame_num)
     num_phonemes = len(pid_seq)
 
     if cfg_strength_gop != 0:
         ##dynamic batch_size
         amount = num_phonemes * duration_mel
         #max_batch_new = int(num_phonemes*(25000/amount))
-        max_batch_new = int(20*(5000/amount))
+        max_batch_new = int(6*(25000/amount))
     else:
         amount = num_phonemes * duration_mel
         #max_batch_new = int(num_phonemes*(25000/amount))
-        max_batch_new = int(20*(5000/amount))
+        max_batch_new = int(6*(25000/amount))
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
     # if res <= 0.5 * max_batch_new:
     #     iter_num = quo if quo > 0 else 1
@@ -205,12 +232,10 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     count = 0
     gop = torch.rand((0), device=device)
     gop_null = torch.rand((0), device=device)
-    lid_res_mean = []
-    lid_res_mean_null = []
-    lid_res_norm = []
-    lid_res_norm_null = []
-    lid_log_mean = []
-    lid_log_mean_null = []
+    lid_res = []
+    lid_res_null = []
+    lid_count = []
+    lid_count_null = [] 
     for i in range(iter_num):
         b_size = max_batch_new if i != iter_num-1 else num_phonemes-count
         if b_size == 0:
@@ -232,21 +257,18 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_null_temp, lid_mean_t, lid_mean_null_t, lid_norm_t, lid_norm_null_t, lid_log_t, lid_log_null_t = model.compute_prob_hut_lid( **input_kwargs)
+        gop_temp, gop_null_temp, lid_res_t, lid_res_null_t, lid_count_t, lid_count_null_t = model.compute_prob_hut_lid_full( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_null = torch.concat((gop_null,gop_null_temp))
-        lid_res_mean = lid_res_mean + lid_mean_t
-        lid_res_mean_null = lid_res_mean_null + lid_mean_null_t
-        lid_res_norm = lid_res_norm + lid_norm_t
-        lid_res_norm_null = lid_res_norm_null + lid_norm_null_t 
-        lid_log_mean = lid_log_mean + lid_log_t
-        lid_log_mean_null = lid_log_mean_null + lid_log_null_t
-          
+        lid_res = lid_res + lid_res_t
+        lid_res_null = lid_res_null + lid_res_null_t
+        lid_count = lid_count + lid_count_t
+        lid_count_null = lid_count_null + lid_count_null_t      
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
         count += b_size          
     ##return gop_list, gop_diff_list, 1D-list NumP 
     #gop_diff = gop - gop_diff
-    return gop.tolist(), gop_null.tolist(), lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null
+    return gop.tolist(), gop_null.tolist(), lid_res, lid_res_null, lid_count, lid_count_null
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -353,15 +375,15 @@ def batch_process(batch, device, out_path=None):
     #diff_symbol = "a scientist walked through a pig"
     masking_ratio_min=1
     #masking_ratio_min=1
-    ratio_avg = 1.2
-    steps=24
-    n_samples=20
-    #sway_sampling_coef = None
+    ratio_avg = 1
+    steps=16
+    n_samples=10
+    sway_sampling_coef = None
     #sway_sampling_coef = -1
-    sway_sampling_coef = 1
     remove_first_t_back = False
     #use_null_diff =True
     use_null_diff =False
+    neighbor_frame_num = 2
     
     if tokenizer == "pinyin" and diff_symbol is not None:
         diff_symbol = convert_char_to_pinyin([diff_symbol])
@@ -382,19 +404,13 @@ def batch_process(batch, device, out_path=None):
             if diff_symbol is not None:
                 assert len(diff_symbol)== 1
                 #diff_symbol = [(diff_symbol[0]*len(pid_seq))+[" "]]
-            gop_list, gop_null_list, lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
-            assert len(pid_seq) == len(gop_list) and len(pid_seq) == len(lid_res_mean)
+            gop_list, gop_null_list, lid_res, lid_res_null, lid_count, lid_count_null = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff, neighbor_frame_num=neighbor_frame_num)       
+            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_null_list)
             ### write files      
             f.write(uid+'\n')
-            for i, (gop, gop_null, lid_mean, lid_mean_null, lid_norm, lid_norm_null, lid_log, lid_log_null) \
-                in enumerate(zip(gop_list, gop_null_list, lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null)):
-                lid_mean = ",".join([str(num) for num in lid_mean])
-                lid_mean_null = ",".join([str(num) for num in lid_mean_null])  
-                lid_norm = ",".join([str(num) for num in lid_norm])
-                lid_norm_null = ",".join([str(num) for num in lid_norm_null])
-                lid_log = ",".join([str(num) for num in lid_log])
-                lid_log_null = ",".join([str(num) for num in lid_log_null])
-                f.write("%d %s %s %s %s %s %s %s %s %s\n"%(i, pid_seq[i][0], gop, gop_null, lid_mean, lid_mean_null, lid_norm, lid_norm_null, lid_log, lid_log_null))
+            for i, (gop, gop_null, lid, lid_null, lid_c, lid_c_null) \
+                in enumerate(zip(gop_list, gop_null_list, lid_res, lid_res_null, lid_count, lid_count_null)):
+                f.write("%d %s %s %s %s %s %s %s\n"%(i, pid_seq[i][0], gop, gop_null, lid, lid_null, lid_c, lid_c_null))
             f.write("\n")
     
 if __name__ == "__main__":
@@ -457,8 +473,7 @@ if __name__ == "__main__":
     #last_utt = "flas1cn2"
     #last_utt = "fabm2ad2"
     last_utt = None
-    #last_utt = "fahj1dx2"
-    #last_utt = "facs2av2"
+
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

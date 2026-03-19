@@ -191,11 +191,11 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
         ##dynamic batch_size
         amount = num_phonemes * duration_mel
         #max_batch_new = int(num_phonemes*(25000/amount))
-        max_batch_new = int(20*(5000/amount))
+        max_batch_new = int(30*(5000/amount))
     else:
         amount = num_phonemes * duration_mel
         #max_batch_new = int(num_phonemes*(25000/amount))
-        max_batch_new = int(20*(5000/amount))
+        max_batch_new = int(30*(5000/amount))
     # quo, res = num_phonemes // max_batch_new, num_phonemes % max_batch_new
     # if res <= 0.5 * max_batch_new:
     #     iter_num = quo if quo > 0 else 1
@@ -205,12 +205,10 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
     count = 0
     gop = torch.rand((0), device=device)
     gop_null = torch.rand((0), device=device)
-    lid_res_mean = []
-    lid_res_mean_null = []
-    lid_res_norm = []
-    lid_res_norm_null = []
-    lid_log_mean = []
-    lid_log_mean_null = []
+    lid_res = []
+    lid_res_null = []
+    lid_count = []
+    lid_count_null = [] 
     for i in range(iter_num):
         b_size = max_batch_new if i != iter_num-1 else num_phonemes-count
         if b_size == 0:
@@ -232,21 +230,18 @@ def get_avg_posterior(model, text_in, cond, pid_seq, cfg_strength_gop=0, diff_sy
                     use_null_diff = use_null_diff,           
             )
         ## Hut approximation, directly return aggreagated probability for each phoneme
-        gop_temp, gop_null_temp, lid_mean_t, lid_mean_null_t, lid_norm_t, lid_norm_null_t, lid_log_t, lid_log_null_t = model.compute_prob_hut_lid( **input_kwargs)
+        gop_temp, gop_null_temp, lid_res_t, lid_res_null_t, lid_count_t, lid_count_null_t = model.compute_prob_hut_lid_full( **input_kwargs)
         gop = torch.concat((gop,gop_temp))
         gop_null = torch.concat((gop_null,gop_null_temp))
-        lid_res_mean = lid_res_mean + lid_mean_t
-        lid_res_mean_null = lid_res_mean_null + lid_mean_null_t
-        lid_res_norm = lid_res_norm + lid_norm_t
-        lid_res_norm_null = lid_res_norm_null + lid_norm_null_t 
-        lid_log_mean = lid_log_mean + lid_log_t
-        lid_log_mean_null = lid_log_mean_null + lid_log_null_t
-          
+        lid_res = lid_res + lid_res_t
+        lid_res_null = lid_res_null + lid_res_null_t
+        lid_count = lid_count + lid_count_t
+        lid_count_null = lid_count_null + lid_count_null_t      
         #log_prob_y0, log_prob_y0_null = model.compute_prob_non_batch( **input_kwargs)
         count += b_size          
     ##return gop_list, gop_diff_list, 1D-list NumP 
     #gop_diff = gop - gop_diff
-    return gop.tolist(), gop_null.tolist(), lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null
+    return gop.tolist(), gop_null.tolist(), lid_res, lid_res_null, lid_count, lid_count_null
     
 def load_dataset_local_from_dict(csv_path, cache_additional, trans_map, uttid_list, subset=None, last=None):
     cache_full_path = os.path.join(ds_cache_path, cache_additional)
@@ -353,12 +348,11 @@ def batch_process(batch, device, out_path=None):
     #diff_symbol = "a scientist walked through a pig"
     masking_ratio_min=1
     #masking_ratio_min=1
-    ratio_avg = 1.2
-    steps=24
-    n_samples=20
-    #sway_sampling_coef = None
+    ratio_avg = 1
+    steps=8
+    n_samples=10
+    sway_sampling_coef = None
     #sway_sampling_coef = -1
-    sway_sampling_coef = 1
     remove_first_t_back = False
     #use_null_diff =True
     use_null_diff =False
@@ -382,19 +376,13 @@ def batch_process(batch, device, out_path=None):
             if diff_symbol is not None:
                 assert len(diff_symbol)== 1
                 #diff_symbol = [(diff_symbol[0]*len(pid_seq))+[" "]]
-            gop_list, gop_null_list, lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
-            assert len(pid_seq) == len(gop_list) and len(pid_seq) == len(lid_res_mean)
+            gop_list, gop_null_list, lid_res, lid_res_null, lid_count, lid_count_null = get_avg_posterior(model, tokens, mel, pid_seq, cfg_strength_gop=cfg_strength_gop, diff_symbol=diff_symbol, masking_ratio_min=masking_ratio_min, ratio_avg=ratio_avg, sway_sampling_coef=sway_sampling_coef, steps=steps, n_samples=n_samples, remove_first_t_back=remove_first_t_back, use_null_diff=use_null_diff)       
+            assert len(pid_seq) == len(gop_list) and len(gop_list) == len(gop_null_list)
             ### write files      
             f.write(uid+'\n')
-            for i, (gop, gop_null, lid_mean, lid_mean_null, lid_norm, lid_norm_null, lid_log, lid_log_null) \
-                in enumerate(zip(gop_list, gop_null_list, lid_res_mean, lid_res_mean_null, lid_res_norm, lid_res_norm_null, lid_log_mean, lid_log_mean_null)):
-                lid_mean = ",".join([str(num) for num in lid_mean])
-                lid_mean_null = ",".join([str(num) for num in lid_mean_null])  
-                lid_norm = ",".join([str(num) for num in lid_norm])
-                lid_norm_null = ",".join([str(num) for num in lid_norm_null])
-                lid_log = ",".join([str(num) for num in lid_log])
-                lid_log_null = ",".join([str(num) for num in lid_log_null])
-                f.write("%d %s %s %s %s %s %s %s %s %s\n"%(i, pid_seq[i][0], gop, gop_null, lid_mean, lid_mean_null, lid_norm, lid_norm_null, lid_log, lid_log_null))
+            for i, (gop, gop_null, lid, lid_null, lid_c, lid_c_null) \
+                in enumerate(zip(gop_list, gop_null_list, lid_res, lid_res_null, lid_count, lid_count_null)):
+                f.write("%d %s %s %s %s %s %s %s\n"%(i, pid_seq[i][0], gop, gop_null, lid, lid_null, lid_c, lid_c_null))
             f.write("\n")
     
 if __name__ == "__main__":
@@ -457,8 +445,7 @@ if __name__ == "__main__":
     #last_utt = "flas1cn2"
     #last_utt = "fabm2ad2"
     last_utt = None
-    #last_utt = "fahj1dx2"
-    #last_utt = "facs2av2"
+
     
     new_folder = os.path.dirname(out_path)
     if not os.path.exists(new_folder):

@@ -1,5 +1,6 @@
 import abc
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from .event_handling import find_event
 from .misc import _handle_unused_kwargs
 import sys
@@ -1605,7 +1606,7 @@ class FixedGridODESolverLid(metaclass=abc.ABCMeta):
             right_list.append(right)
         return left_list, target_list, right_list
     
-    def integrate(self, t, cond_mask, n_samples):
+    def integrate(self, t, cond_mask, n_samples, lid_t=None):
         time_grid = self.grid_constructor(self.func, self.y0, t)
         assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
         ##XINWEI: MDD EXTRA assertion, no interpolation
@@ -1617,11 +1618,696 @@ class FixedGridODESolverLid(metaclass=abc.ABCMeta):
 
         solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
         ### HUT approx, return directly the phoneme-level jacob
-        jacob_trace = torch.zeros(len(t)-1, *self.y0.shape[:-2], dtype=self.y0.dtype, device=self.y0.device)
+        jacob_trace = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
         y0 = self.y0
           
         #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
         iterator = zip(time_grid[1:-1], time_grid[2:])
+        if lid_t is None:
+            lid_t = int(len(time_grid)/2)-1
+        lid_t = 1
+        torch.manual_seed(0)
+        lid_count_all_t = []
+        lid_mean_all_t = []
+        lid_norm_all_t = []
+        lid_log_all_t = []
+        for i, (t0, t1) in enumerate(iterator):
+            # if i >= 8:
+            #     break
+            if i == 0: # initialize  dt,dy, no need grad
+                dt = time_grid[1] - time_grid[0]  ## always greater than 0
+                dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
+            y1 = y0 + dy
+            solution[i] = y1
+            dt = t1 - t0
+            #if i == lid_t:
+            if True:
+                c_size = int(210/t_size * 50)
+                #pdb.set_trace()
+                ##JVP, Y=J @ N
+                with sdpa_kernel(SDPBackend.MATH):
+                    def batch_jvp(in_vector, k=50, p=10):  # input: (B, T, D)
+                        def single_jvp(v_single): # v: B x T x D
+                            # f(x) = x + v(x), transfer ODE-step jacobian
+                            # _, jvp_result = torch.func.jvp(
+                            #     lambda inp: inp + (self._step_func(self.func, t0, dt, None, inp)[0])*-1,
+                            #     (in_vector,), (v_single,)              
+                            # )
+                            # instantanous jacobian
+                            _, jvp_result = torch.func.jvp(
+                                lambda inp: (self._step_func(self.func, t0, dt, None, inp)[1])*-1,
+                                (in_vector,), (v_single,)              
+                            )
+                            return jvp_result
+                        vs = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
+                        ##same as Hut, block the other input, disable if NOMASK is set
+                        vs[:,cond_mask] = 0
+                        results = torch.vmap(single_jvp, chunk_size=c_size)(vs)  
+                        return results
+                    jvp = batch_jvp(y1, k=40, p=10) # (k+p, B, T, D)
+                # QR decomp Y = Q @ R
+                # We only care about the target dimensions, disable if NOMASK is set
+                jvp[:,cond_mask] = 0
+                # Cast to float32 for QR if needed
+                if jvp.dtype == torch.float16:
+                    jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2).to(torch.float32)
+                else:
+                    jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2)
+                q_mat, r_mat = torch.linalg.qr(jvp_flat)
+                q_mat = q_mat.to(torch.float16).reshape(jvp.shape[1], t_size, d_size, jvp.shape[0]) #(B, T, D, k+p)
+                ##check if all the masked rows of T are zero in Q(checked)
+                #pdb.set_trace()
+                # Project to Q, VJP, B = Q.T @ J
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_lid(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    ## f(x) = x + v(x), transfer ODE-step jacobian
+                    # return in_tensor + (self._step_func(self.func, t0, dt, None, in_tensor)[0])*-1
+                    ## f(x) = v(x), instantanous jacobian
+                    return (self._step_func(self.func, t0, dt, None, in_tensor)[1])*-1
+                vjp_fn = torch.func.vjp(send_target_lid, target_list)[1]
+                projected, = torch.vmap(vjp_fn, in_dims=-1, chunk_size=c_size)(q_mat) ## B x (k+p, t, D) 
+                #check the dimension of the projected
+                # SVD on B, remove the unrelated frames first
+                lid_list_mean = []
+                lid_list_mean_log = []
+                lid_list_norm = []
+                lid_list_count = []
+                alpha = 0.05
+                #print("singulars greater than 0,05 of the highest")
+                for b_index in range(b_size):
+                    B_temp = projected[b_index] ##(k+p, t, D)
+                    _, S, _ = torch.linalg.svd(B_temp.reshape(B_temp.shape[0],-1).to(torch.float32))
+                    #pdb.set_trace()
+                    eps = 1e-8
+                    lid_list_count.append((S>S[0]*alpha).sum().item())
+                    #lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1)).item()) 
+                    lid_list_mean.append(S.mean().item())
+                    lid_list_mean_log.append(S.log().mean().item())
+                    lid_list_norm.append(torch.norm(S, p="fro").item())
+                #lid_res =  torch.tensor(lid_list, device=self.y0.device, dtype=torch.float16)
+                lid_count_all_t.append(lid_list_count)
+                lid_mean_all_t.append(lid_list_mean)
+                lid_norm_all_t.append(lid_list_norm)
+                lid_log_all_t.append(lid_list_mean_log)
+            ##Hut's trace estimator
+            ##step 1, separation
+            left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+            ##step 2, define the target function
+            def send_target_hut(in_list):
+                input_list=[]
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                in_tensor = torch.stack(input_list)
+                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)
+                return f1*-1, dy
+            _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            ##step3, random VJP
+            #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # N x B x T x D
+            vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+            vs[:,cond_mask] = 0
+            vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, T, D)
+            ##step 4, multiplication
+            vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+            jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16)                 
+            y0 = y1
+            # del f1 
+            # torch.cuda.empty_cache()  
+            ##final step          
+            if i == time_grid.shape[0] - 3:
+                y1 = y0 + dy
+                solution[i+1] = y1
+                dt = time_grid[-1] - time_grid[-2]
+                if True:
+                    c_size = int(210/t_size * 50)
+                    #pdb.set_trace()
+                    ##JVP, Y=J @ N
+                    with sdpa_kernel(SDPBackend.MATH):
+                        def batch_jvp(in_vector, k=50, p=10):  # input: (B, T, D)
+                            def single_jvp(v_single): # v: B x T x D
+                                # f(x) = x + v(x), transfer ODE-step jacobian
+                                # _, jvp_result = torch.func.jvp(
+                                #     lambda inp: inp + (self._step_func(self.func, t0, dt, None, inp)[0])*-1,
+                                #     (in_vector,), (v_single,)              
+                                # )
+                                # instantanous jacobian
+                                _, jvp_result = torch.func.jvp(
+                                    lambda inp: (self._step_func(self.func, t0, dt, None, inp)[1])*-1,
+                                    (in_vector,), (v_single,)              
+                                )
+                                return jvp_result
+                            vs = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
+                            ##same as Hut, block the other input?
+                            #vs[:,cond_mask] = 0
+                            results = torch.vmap(single_jvp, chunk_size=c_size)(vs)  
+                            return results
+                        jvp = batch_jvp(y1, k=40, p=10) # (k+p, B, T, D)
+                    # QR decomp Y = Q @ R
+                    # We only care about the target dimensions
+                    jvp[:,cond_mask] = 0
+                    # Cast to float32 for QR if needed
+                    if jvp.dtype == torch.float16:
+                        jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2).to(torch.float32)
+                    else:
+                        jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2)
+                    q_mat, r_mat = torch.linalg.qr(jvp_flat)
+                    q_mat = q_mat.to(torch.float16).reshape(jvp.shape[1], t_size, d_size, jvp.shape[0]) #(B, T, D, k+p)
+                    ##check if all the masked rows of T are zero in Q(checked)
+                    #pdb.set_trace()
+                    # Project to Q, VJP, B = Q.T @ J
+                    left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                    def send_target_lid(in_list):
+                        input_list=[]
+                        for i in range(len(in_list)):
+                            input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                        in_tensor = torch.stack(input_list)
+                        ## f(x) = x + v(x), transfer ODE-step jacobian
+                        # return in_tensor + (self._step_func(self.func, t0, dt, None, in_tensor)[0])*-1
+                        ## f(x) = v(x), instantanous jacobian
+                        return (self._step_func(self.func, t0, dt, None, in_tensor)[1])*-1
+                    vjp_fn = torch.func.vjp(send_target_lid, target_list)[1]
+                    projected, = torch.vmap(vjp_fn, in_dims=-1, chunk_size=c_size)(q_mat) ## B x (k+p, t, D) 
+                    #check the dimension of the projected
+                    # SVD on B, remove the unrelated frames first
+                    lid_list_mean = []
+                    lid_list_mean_log = []
+                    lid_list_norm = []
+                    lid_list_count = []
+                    alpha = 0.05
+                    #print("singulars greater than 0,05 of the highest")
+                    for b_index in range(b_size):
+                        B_temp = projected[b_index] ##(k+p, t, D)
+                        _, S, _ = torch.linalg.svd(B_temp.reshape(B_temp.shape[0],-1).to(torch.float32))
+                        #pdb.set_trace()
+                        eps = 1e-8
+                        lid_list_count.append((S>S[0]*alpha).sum().item())
+                        #lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1)).item()) 
+                        lid_list_mean.append(S.mean().item())
+                        lid_list_mean_log.append(S.log().mean().item())
+                        lid_list_norm.append(torch.norm(S, p="fro").item())
+                    #lid_res =  torch.tensor(lid_list, device=self.y0.device, dtype=torch.float16)
+                    lid_count_all_t.append(lid_list_count)
+                    lid_mean_all_t.append(lid_list_mean)
+                    lid_norm_all_t.append(lid_list_norm)
+                    lid_log_all_t.append(lid_list_mean_log)
+                ##HUT approx
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_hut(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    dy, f1 = self._step_func(self.func, t1, dt, None, in_tensor)
+                    return f1*-1, dy
+                _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+                vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+                vs[:,cond_mask] = 0
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)           
+        return solution, jacob_trace, lid_mean_all_t, lid_norm_all_t, lid_count_all_t, lid_log_all_t
+        #return solution, jacob_trace, lid_list, lid_list_count
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0) 
+    
+class FixedGridODESolverLid832(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def get_parts(self, y1, cond_mask):
+        target_list = []
+        left_list = []
+        right_list = []
+        for b_idx in range(y1.shape[0]):
+            target = y1[b_idx, ~cond_mask[b_idx]]
+            left = y1[b_idx, 0:(~cond_mask[b_idx]).nonzero()[0]]
+            right = y1[b_idx, (~cond_mask[b_idx]).nonzero()[-1]+1:]
+            target_list.append(target)
+            left_list.append(left)
+            right_list.append(right)
+        return left_list, target_list, right_list
+    
+    def integrate(self, t, cond_mask, n_samples, lid_t=None):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        y0 = self.y0
+          
+        #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
+        iterator = zip(time_grid[1:-1], time_grid[2:])
+        if lid_t is None:
+            lid_t = int(len(time_grid)/2)-1
+        lid_t = 1
+        torch.manual_seed(0)
+        trace_all_t = []
+        lid_count_all_t = []
+        lid_mean_all_t = []
+        lid_norm_all_t = []
+        lid_log_all_t = []
+        for i, (t0, t1) in enumerate(iterator):
+            if i >= 8:
+                break
+            if i == 0: # initialize  dt,dy, no need grad
+                dt = time_grid[1] - time_grid[0]  ## always greater than 0
+                dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
+            y1 = y0 + dy
+            solution[i] = y1
+            dt = t1 - t0
+            #if i == lid_t:
+            if i%2==0: #(0,2,4,6)
+                c_size = int(160/t_size * 50)
+                #pdb.set_trace()
+                ##JVP, Y=J @ N
+                with sdpa_kernel(SDPBackend.MATH):
+                    def batch_jvp(in_vector, k=50, p=10):  # input: (B, T, D)
+                        def single_jvp(v_single): # v: B x T x D
+                            # f(x) = x + v(x), transfer ODE-step jacobian
+                            # _, jvp_result = torch.func.jvp(
+                            #     lambda inp: inp + (self._step_func(self.func, t0, dt, None, inp)[0])*-1,
+                            #     (in_vector,), (v_single,)              
+                            # )
+                            # instantanous jacobian
+                            _, jvp_result = torch.func.jvp(
+                                lambda inp: (self._step_func(self.func, t0, dt, None, inp)[1])*-1,
+                                (in_vector,), (v_single,)              
+                            )
+                            return jvp_result
+                        vs = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
+                        ##same as Hut, block the other input?
+                        vs[:,cond_mask] = 0
+                        results = torch.vmap(single_jvp, chunk_size=c_size)(vs)  
+                        return results
+                    jvp = batch_jvp(y1, k=40, p=10) # (k+p, B, T, D)
+                # QR decomp Y = Q @ R
+                # We only care about the target dimensions
+                jvp[:,cond_mask] = 0
+                # Cast to float32 for QR if needed
+                if jvp.dtype == torch.float16:
+                    jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2).to(torch.float32)
+                else:
+                    jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2)
+                q_mat, r_mat = torch.linalg.qr(jvp_flat)
+                q_mat = q_mat.to(torch.float16).reshape(jvp.shape[1], t_size, d_size, jvp.shape[0]) #(B, T, D, k+p)
+                ##check if all the masked rows of T are zero in Q(checked)
+                #pdb.set_trace()
+                # Project to Q, VJP, B = Q.T @ J
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_lid(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    ## f(x) = x + v(x), transfer ODE-step jacobian
+                    # return in_tensor + (self._step_func(self.func, t0, dt, None, in_tensor)[0])*-1
+                    ## f(x) = v(x), instantanous jacobian
+                    return (self._step_func(self.func, t0, dt, None, in_tensor)[1])*-1
+                vjp_fn = torch.func.vjp(send_target_lid, target_list)[1]
+                projected, = torch.vmap(vjp_fn, in_dims=-1, chunk_size=c_size)(q_mat) ## B x (k+p, t, D) 
+                #check the dimension of the projected
+                # SVD on B, remove the unrelated frames first
+                lid_list_mean = []
+                lid_list_mean_log = []
+                lid_list_norm = []
+                lid_list_count = []
+                alpha = 0.05
+                #print("singulars greater than 0,05 of the highest")
+                for b_index in range(b_size):
+                    B_temp = projected[b_index] ##(k+p, t, D)
+                    _, S, _ = torch.linalg.svd(B_temp.reshape(B_temp.shape[0],-1).to(torch.float32))
+                    #pdb.set_trace()
+                    eps = 1e-8
+                    lid_list_count.append((S>S[0]*alpha).sum().item())
+                    #lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1)).item()) 
+                    lid_list_mean.append(S.mean().item())
+                    lid_list_mean_log.append(S.log().mean().item())
+                    lid_list_norm.append(torch.norm(S, p="fro").item())
+                #lid_res =  torch.tensor(lid_list, device=self.y0.device, dtype=torch.float16)
+                lid_count_all_t.append(lid_list_count)
+                lid_mean_all_t.append(lid_list_mean)
+                lid_norm_all_t.append(lid_list_norm)
+                lid_log_all_t.append(lid_list_mean_log)
+            ##Hut's trace estimator
+            ##step 1, separation
+            left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+            ##step 2, define the target function
+            def send_target_hut(in_list):
+                input_list=[]
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                in_tensor = torch.stack(input_list)
+                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)
+                return f1*-1, dy
+            _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            ##step3, random VJP
+            if i%2==0:
+                #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # N x B x T x D
+                vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+                vs[:,cond_mask] = 0
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, T, D)
+                ##step 4, multiplication
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                trace_all_t.append(torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16).tolist())                 
+            y0 = y1
+            # del f1 
+            # torch.cuda.empty_cache()  
+            ##final step          
+            if i == time_grid.shape[0] - 3:
+                y1 = y0 + dy
+                solution[i+1] = y1
+                dt = time_grid[-1] - time_grid[-2]
+                if True:
+                    c_size = int(210/t_size * 50)
+                    #pdb.set_trace()
+                    ##JVP, Y=J @ N
+                    with sdpa_kernel(SDPBackend.MATH):
+                        def batch_jvp(in_vector, k=50, p=10):  # input: (B, T, D)
+                            def single_jvp(v_single): # v: B x T x D
+                                # f(x) = x + v(x), transfer ODE-step jacobian
+                                # _, jvp_result = torch.func.jvp(
+                                #     lambda inp: inp + (self._step_func(self.func, t0, dt, None, inp)[0])*-1,
+                                #     (in_vector,), (v_single,)              
+                                # )
+                                # instantanous jacobian
+                                _, jvp_result = torch.func.jvp(
+                                    lambda inp: (self._step_func(self.func, t0, dt, None, inp)[1])*-1,
+                                    (in_vector,), (v_single,)              
+                                )
+                                return jvp_result
+                            vs = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
+                            ##same as Hut, block the other input?
+                            #vs[:,cond_mask] = 0
+                            results = torch.vmap(single_jvp, chunk_size=c_size)(vs)  
+                            return results
+                        jvp = batch_jvp(y1, k=40, p=10) # (k+p, B, T, D)
+                    # QR decomp Y = Q @ R
+                    # We only care about the target dimensions
+                    jvp[:,cond_mask] = 0
+                    # Cast to float32 for QR if needed
+                    if jvp.dtype == torch.float16:
+                        jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2).to(torch.float32)
+                    else:
+                        jvp_flat = jvp.reshape(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).transpose(1,2)
+                    q_mat, r_mat = torch.linalg.qr(jvp_flat)
+                    q_mat = q_mat.to(torch.float16).reshape(jvp.shape[1], t_size, d_size, jvp.shape[0]) #(B, T, D, k+p)
+                    ##check if all the masked rows of T are zero in Q(checked)
+                    #pdb.set_trace()
+                    # Project to Q, VJP, B = Q.T @ J
+                    left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                    def send_target_lid(in_list):
+                        input_list=[]
+                        for i in range(len(in_list)):
+                            input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                        in_tensor = torch.stack(input_list)
+                        ## f(x) = x + v(x), transfer ODE-step jacobian
+                        # return in_tensor + (self._step_func(self.func, t0, dt, None, in_tensor)[0])*-1
+                        ## f(x) = v(x), instantanous jacobian
+                        return (self._step_func(self.func, t0, dt, None, in_tensor)[1])*-1
+                    vjp_fn = torch.func.vjp(send_target_lid, target_list)[1]
+                    projected, = torch.vmap(vjp_fn, in_dims=-1, chunk_size=c_size)(q_mat) ## B x (k+p, t, D) 
+                    #check the dimension of the projected
+                    # SVD on B, remove the unrelated frames first
+                    lid_list_mean = []
+                    lid_list_mean_log = []
+                    lid_list_norm = []
+                    lid_list_count = []
+                    alpha = 0.05
+                    #print("singulars greater than 0,05 of the highest")
+                    for b_index in range(b_size):
+                        B_temp = projected[b_index] ##(k+p, t, D)
+                        _, S, _ = torch.linalg.svd(B_temp.reshape(B_temp.shape[0],-1).to(torch.float32))
+                        #pdb.set_trace()
+                        eps = 1e-8
+                        lid_list_count.append((S>S[0]*alpha).sum().item())
+                        #lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1)).item()) 
+                        lid_list_mean.append(S.mean().item())
+                        lid_list_mean_log.append(S.log().mean().item())
+                        lid_list_norm.append(torch.norm(S, p="fro").item())
+                    #lid_res =  torch.tensor(lid_list, device=self.y0.device, dtype=torch.float16)
+                    lid_count_all_t.append(lid_list_count)
+                    lid_mean_all_t.append(lid_list_mean)
+                    lid_norm_all_t.append(lid_list_norm)
+                    lid_log_all_t.append(lid_list_mean_log)
+                ##HUT approx
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_hut(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    dy, f1 = self._step_func(self.func, t1, dt, None, in_tensor)
+                    return f1*-1, dy
+                _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+                vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+                vs[:,cond_mask] = 0
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                trace_all_t.append(torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16).tolist())      
+        return solution, trace_all_t, lid_mean_all_t, lid_norm_all_t, lid_count_all_t, lid_log_all_t
+        #return solution, jacob_trace, lid_list, lid_list_count
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0) 
+ 
+class FixedGridODESolverLidEnergy(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def get_parts(self, y1, cond_mask):
+        target_list = []
+        left_list = []
+        right_list = []
+        for b_idx in range(y1.shape[0]):
+            target = y1[b_idx, ~cond_mask[b_idx]]
+            left = y1[b_idx, 0:(~cond_mask[b_idx]).nonzero()[0]]
+            right = y1[b_idx, (~cond_mask[b_idx]).nonzero()[-1]+1:]
+            target_list.append(target)
+            left_list.append(left)
+            right_list.append(right)
+        return left_list, target_list, right_list
+    
+    def integrate(self, t, cond_mask, n_samples, lid_t=None):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        jacob_trace = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
+        lid_energy = []
+        y0 = self.y0
+          
+        #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
+        iterator = zip(time_grid[1:-1], time_grid[2:])
+        if lid_t is None:
+            lid_t = int(len(time_grid)/2)-1
+        lid_t = 1
         torch.manual_seed(0)
         for i, (t0, t1) in enumerate(iterator):
             if i == 0: # initialize  dt,dy, no need grad
@@ -1629,69 +2315,30 @@ class FixedGridODESolverLid(metaclass=abc.ABCMeta):
                 dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
             y1 = y0 + dy
             solution[i] = y1
-            if i == 0:
-                ##JVP, Y=J @ N
-                def batch_jvp(in_vector, k=50, p=10):  # input: (B, T, D)
-                    def single_jvp(v_single): # v: B x T x D
-                        _, jvp_result = torch.func.jvp(
-                            lambda inp: (self._step_func(self.func, t0, dt, None, inp)[1])*-1,
-                            in_vector, v_single              
-                        )
-                        return jvp_result
-                    vs = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
-                    ##same as Hut
-                    pdb.set_trqace()
-                    vs[cond_mask[None].expand(k+p, b_size, t_size)] = 0
-                    results = torch.vmap(single_jvp)(vs, chunk_size=100)  
-                    return results 
-                jvp = batch_jvp(y1) # (k+p, B, T, D)
-                # QR decomp Y = Q @ R
-                # We only care about the target dimensions
-                jvp[cond_mask[None].expand(jvp.shape[0], b_size, t_size)] = 0
-                q_mat = torch.linalg.qr(jvp.view(jvp.shape[0], jvp.shape[1], -1).transpose(0,1).tranpose(1,2))[0].reshape(jvp.shape[0], t_size, d_size, jvp.shape[0]) #(B, T, D, k+p)
-                ##check if all the masked rows of T are zero in Q
-                pdb.set_trace()
-                # Porject to Q, VJP, B = Q.T @ J
-                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
-                def send_target_lid(in_list):
-                    input_list=[]
-                    for i in range(in_list):
-                        input_list.append(torch.cat((left_list[i],target_list[i],right_list[i])))
-                    in_tensor = torch.stack(input_list)
-                    return (self._step_func(self.func, t0, dt, None, in_tensor)[1])*-1
-                vjp_fn = torch.func.vjp(send_target, target_list)[1]
-                projected = torch.vmap(vjp_fn, in_dim=-1)(q_mat) ##(k+p, B, T, D) 
-                #check the dimension of the projected
-                pdb.set_trace()
-                # SVD on B, remove the unrelated frames first
-                lid_list = []
-                for b_index in range(b_size):
-                    B_temp = projected[:,b_index,~cond_mask[b_index],:] ##(k+p, t, D)
-                    _, S, _ = torch.linalg.svd(B_temp.view(B_temp.shape[0],-1))
-                    pdb.set_trace()
-                    eps = 1e-8
-                    lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1))) 
-                lis_res =  torch.tensor(lid_list, device=self.y0.device)
+            dt = t1 - t0
             ##Hut's trace estimator
             ##step 1, separation
             left_list, target_list, right_list = self.get_parts(y1, cond_mask)
             ##step 2, define the target function
             def send_target_hut(in_list):
                 input_list=[]
-                for i in range(in_list):
-                    input_list.append(torch.cat((left_list[i],target_list[i],right_list[i])))
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
                 in_tensor = torch.stack(input_list)
-                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)[1]
+                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)
                 return f1*-1, dy
-            _, vjp_fn, dy,  = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
             ##step3, random VJP
             #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # N x B x T x D
             vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
-            vs[cond_mask[None].expand(vs.shape[0], b_size, t_size)] = 0
-            vjp_res = torch.vmap(vjp_fn, in_dim=0)(vs) ##(N, B, T, D)
+            vs[:,cond_mask] = 0
+            vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, t, D)
             ##step 4, multiplication
-            vjp_res = vjp_res * vs
-            jacob_trace[i] = vjp_res.sum(dim=(-1,-2)).mean(dim=0)                    
+            vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+            jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16) 
+            ##step 5, energy estimation
+            lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean().item() for b_idx in range(b_size)])  
+                            
             y0 = y1
             # del f1 
             # torch.cuda.empty_cache()  
@@ -1703,17 +2350,270 @@ class FixedGridODESolverLid(metaclass=abc.ABCMeta):
                 left_list, target_list, right_list = self.get_parts(y1, cond_mask)
                 def send_target_hut(in_list):
                     input_list=[]
-                    for i in range(in_list):
-                        input_list.append(torch.cat((left_list[i],target_list[i],right_list[i])))
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
                     in_tensor = torch.stack(input_list)
-                    dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)[1]
+                    dy, f1 = self._step_func(self.func, t1, dt, None, in_tensor)
                     return f1*-1, dy
-                _, vjp_fn, dy,  = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+                _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
                 vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
-                vs[cond_mask[None].expand(vs.shape[0], b_size, t_size)] = 0
-                vjp_res = torch.vmap(vjp_fn, in_dim=0)(vs) ##(N, B, T, D)
-                jacob_trace[i+1] = vjp_res.sum(dim=(-1,-2)).mean(dim=0)              
-        return solution, jacob_trace
+                vs[:,cond_mask] = 0
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)   
+                #energy estimation
+                lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean() for b_idx in range(b_size)])          
+        return solution, jacob_trace, lid_energy
+        #return solution, jacob_trace, lid_list, lid_list_count
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0) 
+
+class FixedGridODESolverLidFull(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def get_parts(self, y1, cond_mask):
+        target_list = []
+        left_list = []
+        right_list = []
+        for b_idx in range(y1.shape[0]):
+            target = y1[b_idx, ~cond_mask[b_idx]]
+            left = y1[b_idx, 0:(~cond_mask[b_idx]).nonzero()[0]]
+            right = y1[b_idx, (~cond_mask[b_idx]).nonzero()[-1]+1:]
+            target_list.append(target)
+            left_list.append(left)
+            right_list.append(right)
+        return left_list, target_list, right_list
+    
+    def integrate(self, t, cond_mask, n_samples, k=290, p=10):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        jacob_trace = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
+        y0 = self.y0
+          
+        #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
+        iterator = zip(time_grid[1:-1], time_grid[2:])
+        torch.manual_seed(0)
+        for i, (t0, t1) in enumerate(iterator):
+            if i == 0: # initialize  dt,dy, no need grad
+                dt = time_grid[1] - time_grid[0]  ## always greater than 0
+                dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
+            y1 = y0 + dy
+            solution[i] = y1
+            ##Hut's trace estimator
+            dt = t1 - t0
+            ##step 1, separation
+            left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+            ##step 2, define the target function
+            def send_target_hut(in_list):
+                input_list=[]
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                in_tensor = torch.stack(input_list)
+                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)
+                return f1*-1, dy
+            _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            ##step3, random VJP
+            #v = torch.randint(0, 2, size=(b_size,n_samples,t_size,d_size), device=self.y0.device)*2 - 1 # N x B x T x D
+            vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+            vs[:,cond_mask] = 0
+            vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, T, D)
+            ##step 4, multiplication
+            vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+            jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16)                 
+            y0 = y1
+            # del f1 
+            # torch.cuda.empty_cache()  
+            ##final step         
+            if i == time_grid.shape[0] - 3:
+                y1 = y0 + dy
+                solution[i+1] = y1
+                ##HUT approx
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_hut(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    dy, f1 = self._step_func(self.func, t1, dt, None, in_tensor)
+                    return f1*-1, dy
+                _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+                vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+                vs[:,cond_mask] = 0
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16) 
+        ##LID estimation 
+        ## forward JVP
+        c_size = int(200/t_size * 40)
+        jvp_time = zip(time_grid.flip(dims=(0,))[:-1], time_grid.flip(dims=(0,))[1:])
+        points = solution.flip(dims=(0,))
+        #assert len(jvp_time) == points.shape[0]
+        def batch_jvp(in_vector, tangent_vec, t0, dt):  # input: (B, T, D)
+            def single_jvp(v_single): # v: B x T x D
+                _, jvp_result = torch.func.jvp(
+                    lambda inp: inp + (self._step_func(self.func, t0, dt, None, inp)[0])*-1,
+                    (in_vector,), (v_single,)              
+                )
+                return jvp_result
+            results = torch.vmap(single_jvp, chunk_size=c_size)(tangent_vec)  
+            return results
+        #Y=J @ N, rand tangent vectos
+        tangents = torch.randn(k+p,  b_size, t_size, d_size, device=self.device, dtype=self.y0.dtype)
+        #tangents[:,cond_mask] = 0  #should not block the other dimensions in the forward process because we want to explore all the dimensions of the space?
+        for i, (t_jvp_0, t_jvp_1) in enumerate(jvp_time):
+            dt =  t_jvp_0 - t_jvp_1    
+            with sdpa_kernel(SDPBackend.MATH):
+                tangents = batch_jvp(points[i], tangents, t_jvp_0, dt) # (k+p, B, T, D)
+                #pdb.set_trace() #check if conditioned Ts are all zeros. No, but we let it flow natually down 
+        # We only care about the target dimensions
+        tangents[:,cond_mask] = 0
+        # Cast to float32 for QR if needed
+        if tangents.dtype == torch.float16:
+            jvp_flat = tangents.reshape(tangents.shape[0], tangents.shape[1], -1).transpose(0,1).transpose(1,2).to(torch.float32)
+        else:
+            jvp_flat = tangents.reshape(tangents.shape[0], tangents.shape[1], -1).transpose(0,1).transpose(1,2)
+        # QR decomp Y = Q @ tangents
+        cotangent, _ = torch.linalg.qr(jvp_flat)
+        cotangent = cotangent.to(torch.float16).reshape(tangents.shape[1], t_size, d_size, tangents.shape[0]) #(B, T, D, k+p)
+        #pdb.set_trace() ##check if all the masked rows of T are zero in Q(checked)
+        # Project to Q, VJP, B = Q.T @ J
+        vjp_time = zip(time_grid[1:], time_grid[0:-1])
+        vjp_points = solution
+        #assert len(vjp_time) == vjp_points.shape[0]
+        for i, (t_vjp_0, t_vjp_1) in enumerate(vjp_time):
+            dt = t_vjp_0 - t_vjp_1
+            #left_list, target_list, right_list = self.get_parts(vjp_points[i], cond_mask)
+            # def send_target_lid(in_list):
+            #     input_list=[]
+            #     for i in range(len(in_list)):
+            #         input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+            #     in_tensor = torch.stack(input_list)
+            #     dt = 1 # not relevant because we don't rerun the trajectory
+            #     return in_tensor + (self._step_func(self.func, t_vjp, dt, None, in_tensor)[1])*-1
+            def send_target_lid(in_tensor):  ## self._step_func(self.func, t_vjp, dt, None, in_tensor)[0] = dt*v
+                return in_tensor + (self._step_func(self.func, t_vjp_0, dt, None, in_tensor)[0])*-1
+            vjp_fn = torch.func.vjp(send_target_lid, vjp_points[i])[1]
+            cotangent, = torch.vmap(vjp_fn, in_dims=-1, out_dims=-1, chunk_size=c_size)(cotangent) ## (B, T, D, k+p) 
+        # SVD on B, remove the unrelated frames first
+        lid_list = []
+        lid_list_count = []
+        alpha = 0.02
+        #print("singulars greater than 0,05 of the highest")
+        for b_index in range(b_size):
+            B_temp = cotangent[b_index][~cond_mask[b_index]].transpose(0, 2).transpose(1,2) ##(k+p, t, D)
+            _, S, _ = torch.linalg.svd(B_temp.reshape(B_temp.shape[0],-1).to(torch.float32))
+            #eps = 1e-8
+            lid_list_count.append((S>=S[0]*alpha).sum().item())
+            #lid_list.append(torch.exp(torch.mean(torch.log(S + eps), dim=-1)).item())
+            lid_list.append(S.mean().item())  
+        #lid_res =  torch.tensor(lid_list, device=self.y0.device, dtype=torch.float16          
+        return solution, jacob_trace, lid_list, lid_list_count
 
     def integrate_until_event(self, t0, event_fn):
         assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
