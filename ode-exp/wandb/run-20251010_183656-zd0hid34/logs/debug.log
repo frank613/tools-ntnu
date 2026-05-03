@@ -1,0 +1,29 @@
+2025-10-10 18:36:56,840 INFO    MainThread:3598793 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /home/xinweic/tools-ntnu/ode-exp/wandb/run-20251010_183656-zd0hid34/logs/debug.log
+2025-10-10 18:36:56,841 INFO    MainThread:3598793 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /home/xinweic/tools-ntnu/ode-exp/wandb/run-20251010_183656-zd0hid34/logs/debug-internal.log
+2025-10-10 18:36:56,841 INFO    MainThread:3598793 [wandb_init.py:monkeypatch_ipython():622] configuring jupyter hooks <wandb.sdk.wandb_init._WandbInit object at 0x7f193ca51420>
+2025-10-10 18:36:56,841 INFO    MainThread:3598793 [wandb_init.py:init():830] calling init triggers
+2025-10-10 18:36:56,841 INFO    MainThread:3598793 [wandb_init.py:init():835] wandb.init called with sweep_config: {}
+config: {'learning_rate': 0.001, 'epochs': 50, 'batch_size': 64, 'warmup_epochs': 5, 'model_architecture': 'FeedForwardNetwork(\n  (time_proj): Linear(in_features=16, out_features=64, bias=True)\n  (norm): LayerNorm((64,), eps=1e-05, elementwise_affine=True)\n  (network): ModuleList(\n    (0): Linear(in_features=2, out_features=64, bias=True)\n    (1): ReLU()\n    (2): Linear(in_features=64, out_features=64, bias=True)\n    (3): ReLU()\n    (4): Linear(in_features=64, out_features=64, bias=True)\n    (5): ReLU()\n    (6): Linear(in_features=64, out_features=2, bias=True)\n  )\n)', 'source_data_size': 3, 'target_data_size': 3, '_wandb': {}}
+2025-10-10 18:36:56,842 INFO    MainThread:3598793 [wandb_init.py:init():871] starting backend
+2025-10-10 18:36:56,842 INFO    MainThread:3598793 [wandb_init.py:init():874] sending inform_init request
+2025-10-10 18:36:56,843 INFO    MainThread:3598793 [wandb_init.py:init():882] backend started and connected
+2025-10-10 18:36:56,843 INFO    MainThread:3598793 [wandb_run.py:_label_probe_notebook():1304] probe notebook
+2025-10-10 18:36:56,858 INFO    MainThread:3598793 [wandb_init.py:init():953] updated telemetry
+2025-10-10 18:36:56,868 INFO    MainThread:3598793 [wandb_init.py:init():977] communicating run to backend with 90.0 second timeout
+2025-10-10 18:36:57,508 INFO    MainThread:3598793 [wandb_init.py:init():1029] starting run threads in backend
+2025-10-10 18:36:57,735 INFO    MainThread:3598793 [wandb_run.py:_console_start():2458] atexit reg
+2025-10-10 18:36:57,735 INFO    MainThread:3598793 [wandb_run.py:_redirect():2306] redirect: wrap_raw
+2025-10-10 18:36:57,735 INFO    MainThread:3598793 [wandb_run.py:_redirect():2375] Wrapping output streams.
+2025-10-10 18:36:57,735 INFO    MainThread:3598793 [wandb_run.py:_redirect():2398] Redirects installed.
+2025-10-10 18:36:57,735 INFO    MainThread:3598793 [wandb_init.py:init():1075] run started, returning control to user process
+2025-10-10 18:36:57,736 INFO    MainThread:3598793 [wandb_watch.py:_watch():70] Watching
+2025-10-10 18:36:58,179 INFO    MainThread:3598793 [wandb_run.py:_finish():2224] finishing run frankcao613-ntnu/ode-exp/zd0hid34
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [jupyter.py:save_history():480] not saving jupyter history
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [jupyter.py:save_ipynb():404] not saving jupyter notebook
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [wandb_init.py:_jupyter_teardown():607] cleaning up jupyter logic
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [wandb_run.py:_atexit_cleanup():2423] got exitcode: 0
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [wandb_run.py:_restore():2405] restore
+2025-10-10 18:36:58,180 INFO    MainThread:3598793 [wandb_run.py:_restore():2411] restore done
+2025-10-10 18:36:59,185 INFO    MainThread:3598793 [wandb_run.py:_footer_history_summary_info():3903] rendering history
+2025-10-10 18:36:59,186 INFO    MainThread:3598793 [wandb_run.py:_footer_history_summary_info():3935] rendering summary
+2025-10-10 18:36:59,187 INFO    MainThread:3598793 [wandb_run.py:_footer_sync_info():3864] logging synced files

@@ -1,0 +1,59 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            qhr8x48hpxd592j6ejqwk3s4h7pf4ji6:
+                cpu_count: 24
+                cpu_count_logical: 48
+                cudaVersion: "12.3"
+                disk:
+                    /:
+                        total: "2048404750336"
+                        used: "107662258176"
+                email: frankcao613@gmail.com
+                executable: /home/xinweic/miniconda3/envs/f5/bin/python3.10
+                git:
+                    commit: d2c9a1749187d9218f19a817da74584f9deaeb5e
+                    remote: git@github.com:frank613/tools-ntnu.git
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 2
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-25dff4b7-5d4a-0f79-9071-a9f2b2f8d62b
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-0bd54d97-5be2-60ea-0680-17b3be35a781
+                host: aulus7
+                memory:
+                    total: "134921928704"
+                os: Linux-5.15.0-138-generic-x86_64-with-glibc2.35
+                program: tools-ntnu/ode-exp/ode-exp.ipynb
+                python: CPython 3.10.18
+                root: /home/xinweic/tools-ntnu/ode-exp
+                startedAt: "2025-09-26T11:15:44.320439Z"
+                writerId: qhr8x48hpxd592j6ejqwk3s4h7pf4ji6
+        m: []
+        python_version: 3.10.18
+        t:
+            "3":
+                - 2
+                - 16
+            "4": 3.10.18
+            "5": 0.21.0
+            "8":
+                - 1
+            "12": 0.21.0
+            "13": linux-x86_64
+architecture:
+    value: CNN
+dataset:
+    value: CIFAR-100
+epochs:
+    value: 10
+learning_rate:
+    value: 0.02

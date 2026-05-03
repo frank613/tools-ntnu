@@ -1,0 +1,17 @@
+{"time":"2025-09-26T12:52:53.875490655+02:00","level":"INFO","msg":"stream: starting","core version":"0.21.0"}
+{"time":"2025-09-26T12:52:54.348895828+02:00","level":"INFO","msg":"stream: created new stream","id":"vtyncasg"}
+{"time":"2025-09-26T12:52:54.348934272+02:00","level":"INFO","msg":"stream: started","id":"vtyncasg"}
+{"time":"2025-09-26T12:52:54.348981313+02:00","level":"INFO","msg":"writer: Do: started","stream_id":"vtyncasg"}
+{"time":"2025-09-26T12:52:54.34901108+02:00","level":"INFO","msg":"sender: started","stream_id":"vtyncasg"}
+{"time":"2025-09-26T12:52:54.349017262+02:00","level":"INFO","msg":"handler: started","stream_id":"vtyncasg"}
+{"time":"2025-09-26T12:52:54.513619563+02:00","level":"ERROR","msg":"HTTP error","status":403,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-26T12:52:54.513707502+02:00","level":"ERROR","msg":"runupserter: failed to init run","error":"returned error 403: {\"data\":{\"upsertBucket\":null},\"errors\":[{\"message\":\"permission denied\",\"path\":[\"upsertBucket\"],\"extensions\":{\"code\":\"PERMISSION_ERROR\"}}]}"}
+{"time":"2025-09-26T13:05:03.685341621+02:00","level":"INFO","msg":"stream: closing","id":"vtyncasg"}
+{"time":"2025-09-26T13:05:03.687775875+02:00","level":"ERROR","msg":"sender: uploadConfigFile: stream: no run"}
+{"time":"2025-09-26T13:05:03.942183237+02:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-26T13:05:03.942249225+02:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"project my-awesome-team-name/my-awesome-project not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-09-26T13:05:03.942273221+02:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-26T13:05:03.942304611+02:00","level":"INFO","msg":"handler: closed","stream_id":"vtyncasg"}
+{"time":"2025-09-26T13:05:03.942322406+02:00","level":"INFO","msg":"writer: Close: closed","stream_id":"vtyncasg"}
+{"time":"2025-09-26T13:05:03.942332485+02:00","level":"INFO","msg":"sender: closed","stream_id":"vtyncasg"}
+{"time":"2025-09-26T13:05:03.942886824+02:00","level":"INFO","msg":"stream: closed","id":"vtyncasg"}

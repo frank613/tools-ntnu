@@ -1,6 +1,7 @@
 import abc
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
+import torch.nn.functional as F
 from .event_handling import find_event
 from .misc import _handle_unused_kwargs
 import sys
@@ -2300,7 +2301,7 @@ class FixedGridODESolverLidEnergy(metaclass=abc.ABCMeta):
         solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
         ### HUT approx, return directly the phoneme-level jacob
         jacob_trace = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
-        lid_energy = []
+        lid_energy = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
         y0 = self.y0
           
         #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
@@ -2333,11 +2334,35 @@ class FixedGridODESolverLidEnergy(metaclass=abc.ABCMeta):
             vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
             vs[:,cond_mask] = 0
             vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, t, D)
-            ##step 4, multiplication
+            ##step 4, energy estimation
+            ##original energy
+            #lid_energy[i]= torch.stack([torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean() for b_idx in range(b_size)]).to(dtype=torch.float16)
+            ##standard deviation on last dim
+            #lid_energy[i]= torch.stack([vjp_res[b_idx].std(dim=0).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)
+            ##cos sim at D
+            # stability_scores = []
+            # for b_idx in range(b_size):
+            #     res = vjp_res[b_idx]
+            #     res_norm = res / (res.norm(dim=-1, keepdim=True) + 1e-8)
+            #     cos_sim = (res_norm[:, :-1, :] * res_norm[:, 1:, :]).sum(dim=-1)
+            #     sample_stability = cos_sim.mean(dim=(0, 1)) 
+            #     stability_scores.append(sample_stability.item())
+            # lid_energy[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+            ##cos sim at TxD
+            stability_scores = []
+            for b_idx in range(b_size):
+                res = vjp_res[b_idx]
+                res_norm = res / (res.norm(dim=-1, keepdim=True) + 1e-8)
+                cos_sim = (res_norm[:, :-1, :] * res_norm[:, 1:, :]).sum(dim=-1)
+                sample_stability = cos_sim.mean(dim=(0, 1)) 
+                stability_scores.append(sample_stability.item())
+            lid_energy[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+            
+            ##step 5, multiplication
             vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
             jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16) 
             ##step 5, energy estimation
-            lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean().item() for b_idx in range(b_size)])  
+            #lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean().item() for b_idx in range(b_size)])  
                             
             y0 = y1
             # del f1 
@@ -2359,11 +2384,451 @@ class FixedGridODESolverLidEnergy(metaclass=abc.ABCMeta):
                 vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
                 vs[:,cond_mask] = 0
                 vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
-                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
-                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)   
                 #energy estimation
-                lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean() for b_idx in range(b_size)])          
+                ##original energy
+                #lid_energy[i+1]= torch.stack([torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean() for b_idx in range(b_size)]).to(dtype=torch.float16)
+                ##standard deviation on last dim
+                #lid_energy[i+1]= torch.stack([vjp_res[b_idx].std(dim=0).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)
+                ##cos sim
+                stability_scores = []
+                for b_idx in range(b_size):
+                    res = vjp_res[b_idx]
+                    res_norm = res / (res.norm(dim=-1, keepdim=True) + 1e-8)
+                    cos_sim = (res_norm[:, :-1, :] * res_norm[:, 1:, :]).sum(dim=-1)
+                    sample_stability = cos_sim.mean(dim=(0, 1)) 
+                    stability_scores.append(sample_stability.item())
+                lid_energy[i+1] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+                #trace estimation 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)         
         return solution, jacob_trace, lid_energy
+        #return solution, jacob_trace, lid_list, lid_list_count
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0) 
+    
+class FixedGridODESolverLidCos(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def get_parts(self, y1, cond_mask):
+        target_list = []
+        left_list = []
+        right_list = []
+        for b_idx in range(y1.shape[0]):
+            target = y1[b_idx, ~cond_mask[b_idx]]
+            left = y1[b_idx, 0:(~cond_mask[b_idx]).nonzero()[0]]
+            right = y1[b_idx, (~cond_mask[b_idx]).nonzero()[-1]+1:]
+            target_list.append(target)
+            left_list.append(left)
+            right_list.append(right)
+        return left_list, target_list, right_list
+    
+    def integrate(self, t, cond_mask, n_samples, lid_t=None):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        jacob_trace = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
+        cos_steps = torch.zeros(len(t)-1, b_size, dtype=self.y0.dtype, device=self.y0.device)
+        y0 = self.y0
+          
+        #iterator = tqdm(zip(time_grid[1:-1], time_grid[2:]), desc="ODE MDD")
+        iterator = zip(time_grid[1:-1], time_grid[2:])
+        if lid_t is None:
+            lid_t = int(len(time_grid)/2)-1
+        lid_t = 1
+        torch.manual_seed(0)
+        ##Fix the directions for detecting
+        vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+        vs[:,cond_mask] = 0
+        for i, (t0, t1) in enumerate(iterator):
+            if i == 0: # initialize  dt,dy, no need grad
+                dt = time_grid[1] - time_grid[0]  ## always greater than 0
+                dy, f0 = self._step_func(self.func, time_grid[0], dt, None, y0)
+            y1 = y0 + dy
+            solution[i] = y1
+            dt = t1 - t0
+            ##Hut's trace estimator
+            ##step 1, separation
+            left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+            ##step 2, define the target function
+            def send_target_hut(in_list):
+                input_list=[]
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                in_tensor = torch.stack(input_list)
+                dy, f1 = self._step_func(self.func, t0, dt, None, in_tensor)
+                return f1*-1, dy
+            _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            ##step3, random VJP     
+            vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, t, D)
+            if i == 0:
+                last_dir = []
+                for b_idx in range(b_size):
+                    last_dir.append(vjp_res[b_idx])
+                    stability_scores = [1] * b_size
+            else:
+                stability_scores = []
+                for b_idx in range(b_size):
+                    cur_dir = vjp_res[b_idx]
+                    cos_sim = F.cosine_similarity(cur_dir.reshape(n_samples,-1), last_dir[b_idx].reshape(n_samples,-1), dim=-1)
+                    last_dir[b_idx] = cur_dir
+                    stability_scores.append(cos_sim.mean().item())
+            cos_steps[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+            ## Cos-sim from initial
+            # if i == 0:
+            #     vjp_res_init = [ ts.clone() for ts in vjp_res]
+            #     stability_scores = [1] * b_size
+            # else:        
+            #     ##step4, cos sim at TxD
+            #     stability_scores = []
+            #     for b_idx in range(b_size):
+            #         cos_sim = F.cosine_similarity(vjp_res[b_idx].reshape(n_samples,-1), vjp_res_init[b_idx].reshape(n_samples,-1), dim=-1)
+            #         stability_scores.append(cos_sim.mean().item())
+            #cos_steps[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+            
+            ##step 5, multiplication
+            vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+            jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16) 
+            ##step 5, energy estimation
+            #lid_energy.append([ torch.norm(vjp_res[b_idx], p="fro", dim=(-2,-1)).mean().item() for b_idx in range(b_size)])  
+                            
+            y0 = y1
+            # del f1 
+            # torch.cuda.empty_cache()  
+            ##final step          
+            if i == time_grid.shape[0] - 3:
+                y1 = y0 + dy
+                solution[i+1] = y1
+                ##HUT approx
+                left_list, target_list, right_list = self.get_parts(y1, cond_mask)
+                def send_target_hut(in_list):
+                    input_list=[]
+                    for i in range(len(in_list)):
+                        input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                    in_tensor = torch.stack(input_list)
+                    dy, f1 = self._step_func(self.func, t1, dt, None, in_tensor)
+                    return f1*-1, dy
+                _, vjp_fn, dy = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+                vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+                vs[:,cond_mask] = 0
+                ##VJP
+                vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) 
+                if i == 0:
+                    break
+                else:
+                    stability_scores = []
+                    for b_idx in range(b_size):
+                        cur_dir = vjp_res[b_idx]
+                        cos_sim = F.cosine_similarity(cur_dir.reshape(n_samples,-1), last_dir[b_idx].reshape(n_samples,-1), dim=-1)
+                        last_dir[b_idx] = cur_dir
+                        stability_scores.append(cos_sim.mean().item())
+                cos_steps[i+1] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+                # if i == 0:
+                #     break  
+                # else:        
+                #     ##step4, cos sim at TxD
+                #     stability_scores = []
+                #     for b_idx in range(b_size):
+                #         res = vjp_res[b_idx]
+                #         cos_sim = F.cosine_similarity(res.reshape(n_samples,-1), vjp_res_init[b_idx].reshape(n_samples,-1), dim=-1)
+                #         stability_scores.append(cos_sim.mean().item())
+                # cos_steps[i+1] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+                #trace estimation 
+                vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+                jacob_trace[i+1] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)], device=self.y0.device, dtype=torch.float16)         
+        return solution, jacob_trace, cos_steps
+        #return solution, jacob_trace, lid_list, lid_list_count
+
+    def integrate_until_event(self, t0, event_fn):
+        assert self.step_size is not None, "Event handling for fixed step solvers currently requires `step_size` to be provided in options."
+
+        t0 = t0.type_as(self.y0.abs())
+        y0 = self.y0
+        dt = self.step_size
+
+        sign0 = torch.sign(event_fn(t0, y0))
+        max_itrs = 20000
+        itr = 0
+        while True:
+            itr += 1
+            t1 = t0 + dt
+            dy, f0 = self._step_func(self.func, t0, dt, t1, y0)
+            y1 = y0 + dy
+
+            sign1 = torch.sign(event_fn(t1, y1))
+
+            if sign0 != sign1:
+                if self.interp == "linear":
+                    interp_fn = lambda t: self._linear_interp(t0, t1, y0, y1, t)
+                elif self.interp == "cubic":
+                    f1 = self.func(t1, y1)
+                    interp_fn = lambda t: self._cubic_hermite_interp(t0, y0, f0, t1, y1, f1, t)
+                else:
+                    raise ValueError(f"Unknown interpolation method {self.interp}")
+                event_time, y1 = find_event(interp_fn, sign0, t0, t1, event_fn, float(self.atol))
+                break
+            else:
+                t0, y0 = t1, y1
+
+            if itr >= max_itrs:
+                raise RuntimeError(f"Reached maximum number of iterations {max_itrs}.")
+        solution = torch.stack([self.y0, y1], dim=0)
+        return event_time, solution
+
+    def _cubic_hermite_interp(self, t0, y0, f0, t1, y1, f1, t):
+        h = (t - t0) / (t1 - t0)
+        h00 = (1 + 2 * h) * (1 - h) * (1 - h)
+        h10 = h * (1 - h) * (1 - h)
+        h01 = h * h * (3 - 2 * h)
+        h11 = h * h * (h - 1)
+        dt = (t1 - t0)
+        return h00 * y0 + h10 * dt * f0 + h01 * y1 + h11 * dt * f1
+
+    def _linear_interp(self, t0, t1, y0, y1, t):
+        if t == t0:
+            return y0
+        if t == t1:
+            return y1
+        slope = (t - t0) / (t1 - t0)
+        return y0 + slope * (y1 - y0) 
+
+class FixedGridODESolverLidCosPath(metaclass=abc.ABCMeta):
+    order: int
+    def __init__(self, func, y0, step_size=None, grid_constructor=None, interp="linear", perturb=False, **unused_kwargs):
+        self.atol = unused_kwargs.pop('atol')
+        unused_kwargs.pop('rtol', None)
+        unused_kwargs.pop('norm', None)
+        _handle_unused_kwargs(self, unused_kwargs)
+        del unused_kwargs
+
+        self.func = func
+        self.y0 = y0
+        self.dtype = y0.dtype
+        self.device = y0.device
+        self.step_size = step_size
+        self.interp = interp
+        self.perturb = perturb
+
+        if step_size is None:
+            if grid_constructor is None:
+                self.grid_constructor = lambda f, y0, t: t
+            else:
+                self.grid_constructor = grid_constructor
+        else:
+            if grid_constructor is None:
+                self.grid_constructor = self._grid_constructor_from_step_size(step_size)
+            else:
+                raise ValueError("step_size and grid_constructor are mutually exclusive arguments.")
+
+    @classmethod
+    def valid_callbacks(cls):
+        return {'callback_step'}
+
+    @staticmethod
+    def _grid_constructor_from_step_size(step_size):
+        def _grid_constructor(func, y0, t):
+            start_time = t[0]
+            end_time = t[-1]
+
+            niters = torch.ceil((end_time - start_time) / step_size + 1).item()
+            t_infer = torch.arange(0, niters, dtype=t.dtype, device=t.device) * step_size + start_time
+            t_infer[-1] = t[-1]
+
+            return t_infer
+        return _grid_constructor
+
+    @abc.abstractmethod
+    def _step_func(self, func, t0, dt, t1, y0):
+        pass
+
+    def get_parts(self, y1, cond_mask):
+        target_list = []
+        left_list = []
+        right_list = []
+        for b_idx in range(y1.shape[0]):
+            target = y1[b_idx, ~cond_mask[b_idx]]
+            left = y1[b_idx, 0:(~cond_mask[b_idx]).nonzero()[0]]
+            right = y1[b_idx, (~cond_mask[b_idx]).nonzero()[-1]+1:]
+            target_list.append(target)
+            left_list.append(left)
+            right_list.append(right)
+        return left_list, target_list, right_list
+    
+    def integrate(self, t, cond_mask, n_samples, path=None, lid_t=None):
+        time_grid = self.grid_constructor(self.func, self.y0, t)
+        assert time_grid[0] == t[0] and time_grid[-1] == t[-1]
+        ##XINWEI: MDD EXTRA assertion, no interpolation
+        assert len(t) == len(time_grid)
+        
+        b_size = self.y0.shape[0]
+        t_size = self.y0.shape[1]
+        d_size = self.y0.shape[-1]
+
+        #solution = torch.zeros(len(t)-1, *self.y0.shape, dtype=self.y0.dtype, device=self.y0.device)
+        ### HUT approx, return directly the phoneme-level jacob
+        jacob_trace = torch.zeros(len(t), b_size, dtype=self.y0.dtype, device=self.y0.device)
+        cos_steps = torch.zeros(len(t), b_size, dtype=self.y0.dtype, device=self.y0.device)
+        y0 = self.y0
+        assert path is not None
+        assert y0.sum() == path[0].sum()
+        assert len(t) == len(path)  
+        if lid_t is None:
+            lid_t = int(len(time_grid)/2)-1
+        lid_t = 1
+        torch.manual_seed(0)
+        ##Fix the directions for detecting
+        vs = torch.randn(n_samples, b_size,t_size,d_size, device=self.device, dtype=self.y0.dtype) # N x B x T x D
+        vs[:,cond_mask] = 0
+        dt = 1
+        for i, t_step in enumerate(t):
+            ##Hut's trace estimator
+            ##step 1, separation
+            left_list, target_list, right_list = self.get_parts(path[i], cond_mask)
+            ##step 2, define the target function
+            def send_target_hut(in_list):
+                input_list=[]
+                for i in range(len(in_list)):
+                    input_list.append(torch.cat((left_list[i],in_list[i],right_list[i])))
+                in_tensor = torch.stack(input_list)
+                dy, f1 = self._step_func(self.func, t_step, dt, None, in_tensor)
+                return f1, dy
+            _, vjp_fn, _ = torch.func.vjp(send_target_hut, target_list, has_aux=True)
+            ##step3, random VJP     
+            vjp_res, = torch.vmap(vjp_fn, in_dims=0)(vs) ## B x(N, t, D)
+            if i == 0:
+                last_dir = []
+                for b_idx in range(b_size):
+                    last_dir.append(vjp_res[b_idx])
+                    stability_scores = [1] * b_size
+            else:
+                stability_scores = []
+                for b_idx in range(b_size):
+                    cur_dir = vjp_res[b_idx]
+                    cos_sim = F.cosine_similarity(cur_dir.reshape(n_samples,-1), last_dir[b_idx].reshape(n_samples,-1), dim=-1)
+                    last_dir[b_idx] = cur_dir
+                    stability_scores.append(cos_sim.mean().item())
+            cos_steps[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+            ## Cos-sim from initial
+            # if i == 0:
+            #     vjp_res_init = [ ts.clone() for ts in vjp_res]
+            #     stability_scores = [1] * b_size
+            # else:        
+            #     ##step4, cos sim at TxD
+            #     stability_scores = []
+            #     for b_idx in range(b_size):
+            #         cos_sim = F.cosine_similarity(vjp_res[b_idx].reshape(n_samples,-1), vjp_res_init[b_idx].reshape(n_samples,-1), dim=-1)
+            #         stability_scores.append(cos_sim.mean().item())
+            #cos_steps[i] = torch.tensor(stability_scores, device=self.y0.device, dtype=torch.float16)
+                   
+            ##step 5, multiplication
+            vjp_res = [vjp_res[b_idx] * vs[:,b_idx, ~cond_mask[b_idx]] for b_idx in range(b_size)]
+            jacob_trace[i] = torch.tensor([ vjp_res[b_idx].sum(dim=(-1,-2)).mean() for b_idx in range(b_size)],  device=self.y0.device, dtype=torch.float16) 
+                    
+        return jacob_trace, cos_steps
         #return solution, jacob_trace, lid_list, lid_list_count
 
     def integrate_until_event(self, t0, event_fn):
